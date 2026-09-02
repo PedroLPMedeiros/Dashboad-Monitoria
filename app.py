@@ -82,7 +82,7 @@ TME_DISTRIBUTOR_BY_CODE = {
     "COSERN": "Cosern",
 }
 TME_QUEUE_LIMITS = {
-    "LN-TT": "02:00:00",
+    "LN-TT": "00:30:00",
     "Principal": "00:30:00",
 }
 
@@ -2348,7 +2348,6 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                         <span class="unit-card-symbol">{html.escape(unit_icon)}</span>
                         <div class="unit-card-title">
                             <strong>{html.escape(unit.label)}</strong>
-                            <small>{html.escape(short_name)} · {len(item['analytic_records'])} registros</small>
                         </div>
                     </div>
                     <span class="{status_class}">{status_text}</span>
@@ -2364,12 +2363,11 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                     </div>
                 </div>
                 <div class="unit-card-stats">
-                    <div class="unit-card-stat"><span>Em aberto</span><strong>{summary['open_count']}</strong></div>
+                    <div class="unit-card-stat"><span>Atendimentos abertos</span><strong>{summary['open_count']}</strong></div>
                     <div class="unit-card-stat"><span>Fila de espera</span><strong>{summary['waiting_count']}</strong></div>
-                    <div class="unit-card-stat logged"><span>Logados Logos · {source_label}</span><strong>{logged_logos_text}</strong></div>
+                    <div class="unit-card-stat logged"><span>Logados Atuais · {source_label}</span><strong>{logged_logos_text}</strong></div>
                     <div class="unit-card-stat"><span>Com produtividade</span><strong>{summary['unique_agents']}</strong></div>
                     <div class="unit-card-stat"><span>Dia anterior</span><strong>{summary['previous_day']}</strong></div>
-                    <div class="unit-card-stat"><span>Registros analisados</span><strong>{len(item['analytic_records'])}</strong></div>
                 </div>
                 <div class="unit-card-queues">
                     <div class="unit-card-queue"><span>Fila Principal</span><strong>{summary['principal_total']}</strong></div>
