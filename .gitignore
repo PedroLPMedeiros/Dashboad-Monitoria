@@ -1,0 +1,5 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+diagnostico_mutant_*.json
