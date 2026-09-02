@@ -3,9 +3,12 @@
 
 from __future__ import annotations
 
+import base64
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, time
 from typing import Any
+from uuid import UUID
 from zoneinfo import ZoneInfo
 
 import requests
@@ -13,6 +16,72 @@ from requests.adapters import HTTPAdapter
 
 
 BRASILIA_TZ = ZoneInfo("America/Sao_Paulo")
+
+
+def _decode_jwt_payload(token: str) -> dict[str, Any]:
+    """Lê somente os metadados públicos do JWT para localizar o agente."""
+
+    try:
+        encoded_payload = token.split(".")[1]
+        encoded_payload += "=" * (-len(encoded_payload) % 4)
+        decoded = base64.urlsafe_b64decode(encoded_payload.encode("ascii"))
+        payload = json.loads(decoded.decode("utf-8"))
+    except (IndexError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return {}
+
+    return payload if isinstance(payload, dict) else {}
+
+
+def _uuid_candidates(*payloads: Any) -> list[str]:
+    """Encontra UUIDs prováveis do agente/supervisor sem expor o token."""
+
+    found: list[tuple[int, int, str]] = []
+    sequence = 0
+
+    def visit(value: Any, path: tuple[str, ...] = ()) -> None:
+        nonlocal sequence
+
+        if isinstance(value, dict):
+            for key, child in value.items():
+                visit(child, (*path, str(key).lower()))
+            return
+
+        if isinstance(value, (list, tuple)):
+            for child in value:
+                visit(child, path)
+            return
+
+        if not isinstance(value, str):
+            return
+
+        try:
+            candidate = str(UUID(value.strip()))
+        except (ValueError, AttributeError):
+            return
+
+        path_text = ".".join(path)
+        if "agent" in path_text:
+            priority = 0
+        elif "supervisor" in path_text:
+            priority = 1
+        elif "user_id" in path_text or "userid" in path_text:
+            priority = 2
+        elif path and path[-1] == "id":
+            priority = 3
+        else:
+            priority = 4
+
+        found.append((priority, sequence, candidate))
+        sequence += 1
+
+    for payload in payloads:
+        visit(payload)
+
+    ordered: list[str] = []
+    for _, _, candidate in sorted(found):
+        if candidate not in ordered:
+            ordered.append(candidate)
+    return ordered
 
 
 class MutantApiError(RuntimeError):
@@ -195,6 +264,8 @@ class MutantClient:
         self.password = password
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        self._agent_id_candidates: list[str] = []
+        self._supervisor_agent_id: str | None = None
 
         self.session = requests.Session()
 
@@ -277,6 +348,11 @@ class MutantClient:
         self.session.headers[
             "Authorization"
         ] = f"Bearer {token}"
+
+        self._agent_id_candidates = _uuid_candidates(
+            data,
+            _decode_jwt_payload(token),
+        )
 
     def _decode_response(
         self,
@@ -437,6 +513,132 @@ class MutantClient:
             )
 
         return content
+
+    def supervisor_agents(self) -> list[dict[str, Any]]:
+        """Consulta todos os atendentes visíveis no Painel de Controle.
+
+        O endpoint é paginado e exige o identificador do agente supervisor.
+        O identificador é obtido dos metadados retornados na autenticação e
+        validado na primeira página antes de ser reutilizado.
+        """
+
+        candidates = list(self._agent_id_candidates)
+        if self._supervisor_agent_id:
+            candidates = [
+                self._supervisor_agent_id,
+                *(
+                    candidate
+                    for candidate in candidates
+                    if candidate != self._supervisor_agent_id
+                ),
+            ]
+
+        if not candidates:
+            raise MutantApiError(
+                "A autenticação não informou o identificador necessário "
+                "para consultar as pausas."
+            )
+
+        page_size = 100
+
+        def request_page(
+            supervisor_id: str,
+            offset: int,
+        ) -> tuple[dict[str, Any] | None, str | None]:
+            try:
+                response = self.session.post(
+                    (
+                        f"{self.base_url}/api/supervisor/"
+                        f"{supervisor_id}/agents"
+                    ),
+                    params={
+                        "id": supervisor_id,
+                        "limit": str(page_size),
+                        "offset": str(offset),
+                        "status": "",
+                        "search": "",
+                        "ordering": "-status",
+                        "is_bot": "false",
+                    },
+                    json={"campaigns": []},
+                    timeout=self.timeout,
+                )
+            except requests.RequestException as exc:
+                raise MutantApiError(
+                    "Não foi possível consultar o monitoramento de pausas: "
+                    f"{exc}"
+                ) from exc
+
+            if not response.ok:
+                return None, f"HTTP {response.status_code}"
+
+            try:
+                body = response.json()
+            except ValueError:
+                return None, "resposta sem JSON válido"
+
+            if not isinstance(body, dict) or not isinstance(
+                body.get("results"),
+                list,
+            ):
+                return None, "formato de resposta inesperado"
+
+            return body, None
+
+        first_body: dict[str, Any] | None = None
+        selected_id: str | None = None
+        candidate_errors: list[str] = []
+
+        for candidate in candidates:
+            body, error = request_page(candidate, 0)
+            if body is not None:
+                first_body = body
+                selected_id = candidate
+                break
+            candidate_errors.append(error or "falha não identificada")
+
+        if first_body is None or selected_id is None:
+            error_summary = ", ".join(dict.fromkeys(candidate_errors))
+            raise MutantApiError(
+                "A Mutant não aceitou o identificador do supervisor para "
+                "consultar as pausas"
+                + (f" ({error_summary})." if error_summary else ".")
+            )
+
+        self._supervisor_agent_id = selected_id
+        records: list[dict[str, Any]] = []
+        body = first_body
+        offset = 0
+
+        for _ in range(100):
+            page = body.get("results", [])
+            records.extend(
+                item for item in page if isinstance(item, dict)
+            )
+
+            total = safe_int(body.get("count"))
+            offset += len(page)
+
+            if not page:
+                break
+            if total and offset >= total:
+                break
+            if not body.get("next") and len(page) < page_size:
+                break
+
+            body, error = request_page(selected_id, offset)
+            if body is None:
+                raise MutantApiError(
+                    "A paginação do monitoramento de pausas falhou"
+                    + (f" ({error})." if error else ".")
+                )
+
+        unique_records: dict[str, dict[str, Any]] = {}
+        for position, record in enumerate(records):
+            record_id = str(record.get("id") or f"linha-{position}")
+            unique_records[record_id] = record
+
+        return list(unique_records.values())
 
     def ticket_stats(
         self,

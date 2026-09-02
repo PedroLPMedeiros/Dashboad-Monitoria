@@ -72,6 +72,9 @@ GENERAL_DAILY_PRODUCTIVITY_GOAL = (
     sum(UNIT_PLANNED_HEADCOUNT.values()) * DAILY_PRODUCTIVITY_PER_HC
 )
 
+# Intervalo da consulta automática do monitoramento de pausas.
+PAUSE_AUTO_REFRESH_SECONDS = 5 * 60
+
 TME_DISTRIBUTORS = ("BSB", "Coelba", "Pernambuco", "Elektro", "Cosern")
 TME_DISTRIBUTOR_BY_CODE = {
     "BRASILIA": "BSB",
@@ -274,6 +277,293 @@ LOGOS_ROSTER_HASHES = frozenset(
 
 LOGOS_IDENTIFIER_ALIASES = {
     "rafaella waleska souza pereira": "rafaela waleska souza pereira",
+}
+
+# Relação específica do monitoramento de pausas. Os identificadores do novo
+# quadro foram protegidos por SHA-256 e associados à distribuidora de origem.
+# Inclui colaboradores ATIVOS e em AVISO PRÉVIO; FÉRIAS e INSS ficam de fora.
+PAUSE_ROSTER_UNIT_BY_HASH = {
+    "01436aa0010c2ced89b1a71ce7f834578866f13c82ad7d57cc972241887041ea": "COSERN",
+    "016ef783b432cafd4f72faf752f1e906e1b0a04a789a05aac573110710940a7b": "ELEKTRO",
+    "07f177337e1bc7e922aca5566d594b292469f154152335f08ec7794eabc8b55f": "ELEKTRO",
+    "085236bf8bc6811340143293a70e0b091cba25b68ac9b36718004583e14be2a9": "COSERN",
+    "0a5cdc5b673c82123bdb02e2e7973d0f8e03c6cc5dfbee529cf0f65135236279": "BRASILIA",
+    "0bdb4e13054582e23774e75d8e4720d3ffdb049f79d6d8a3df8c795e73f1ed4e": "COSERN",
+    "12ff643a45b0e6beaefe828005c5ac447e589e1f873b46d059e5c8b2f77f8763": "PERNAMBUCO",
+    "1340d09430baefd1e64d3dc1827444f8a73765baded748ac6fff250e8773916b": "COELBA",
+    "153e6e335b7ed3b0decf924f68d855ad1f6816e2f2574c67bed8e6954e63fe6d": "ELEKTRO",
+    "1549607ff6adebfd1065527b446f012505f3c9c6733905e91ec92596cc1fb6bb": "BRASILIA",
+    "163b733a4f7c84201d66ab68eb5b8dfc06b2a7e2be05fe7ebd1c08293908aeee": "PERNAMBUCO",
+    "168db186d301e59c1b25a775b9e85874d9ab96356586b7f42956f6eed8396873": "COELBA",
+    "18e7bdeba0505f91578615e3eb72b351c7ccc3df3e9cc5204f26033920cfa444": "BRASILIA",
+    "18fc030ba531babffb91ea2866e57bb179e8985386e129b00319d6995ddda36c": "PERNAMBUCO",
+    "1f0e132e70dddfb8e5bfb10b45f2797ba1b69950fd4fe343b902d13b7a2b45d2": "PERNAMBUCO",
+    "23b17c1d38af73a5b725655142a0fdade6a83402e328fa95a466e3acc591c64f": "ELEKTRO",
+    "29c5cde9ceea6dc2e1ca3afd0fcf36cc047f323618584056a956833d2bf6b4b7": "COELBA",
+    "2c265b704abff93cb8860bf0b17d57409ea7c2485f2d972f75fcf843445df2c1": "PERNAMBUCO",
+    "2d0e6656009fb9a19028f2bdec475c4f22b0d9e50a74b7c85d883a47f18c6127": "PERNAMBUCO",
+    "30dd9f6d154605c449e2a4c955a8cfaa5127b7937d3e45ad361e4ac2bd313cd5": "BRASILIA",
+    "30ff35a98b7ae0f6114feb9e5b2c2094c8815f7387c42f36ee0fba28bb6bc08d": "COELBA",
+    "353d1777c020667b88a7579dff38cb5cb279cbc0967bb6549cdfd324d395df8e": "ELEKTRO",
+    "38c90f0d8b25313972b0c789bdc2f2d122d041aecc66721ed0d0527fdf291ffd": "ELEKTRO",
+    "3a827498231a86bf33a3963f4da91afe812c2766a624a27147722a42175dbbcf": "COSERN",
+    "3c573f84425fa2f3a05cfe370f08618a0d7d7322c61dd09dbb29b94f9697fbb9": "COSERN",
+    "3deb7f482b706d6b83a45b99a2ad2bea8dba3302e35db3223259d0162216721f": "PERNAMBUCO",
+    "3fb9a8398877b944bf329496af605aa92abdd258f549836413e34b8c904ca026": "PERNAMBUCO",
+    "40adaf30bb1d3139b425245fc3d2bde50271e111ac5f36627354daebde7280fa": "COSERN",
+    "440cc72d65e638593c13d859bc5c00039bbb6574f50892c89c83ee0b5edd49f0": "ELEKTRO",
+    "4480f621ea8182143cfc731b135977a7d5b43ca2b278abe76a2fd612495d8a61": "COSERN",
+    "44fef09c4bd36dd080c4ceb0dc8d3e5beab71f67ba497731cd9644e8023fde6c": "ELEKTRO",
+    "45d18d097263b3c6f82ab4b32da84fee0b2cb986074708c6a387758a1130f6c1": "COSERN",
+    "4a57946cb2eeec37c6548c7383bcc6526c86b17cdc508ffe91dae2f0c0aef656": "BRASILIA",
+    "4a78555730f8481c615f3f57da14aaf57991075c31711d389a38b726b8191a9d": "ELEKTRO",
+    "4b51ae63b69f4fc6c6f2d83453a1515c9d2eb06f600b74520c0f7da9342eac24": "COSERN",
+    "4e6c73ead573c8e3778881af05b6829d39ff522f1588a268c15ddd282d2abe09": "ELEKTRO",
+    "4f8201bbc8c952f8489816e4221753058430b7342cc97eec99767680a4aca4ea": "COSERN",
+    "5096a30cb41805b68a7001d86bbe712ed56ef60cd3378a7a50aa7b350642da71": "PERNAMBUCO",
+    "50cdb5eaa08a46ffca9bf6893b3ec675c9584cebbc302cdae062570aa9ee8936": "COSERN",
+    "52e652f88b45c0957142339768d0853a6a559ea526685fb48e5fa6bd92f181d4": "COELBA",
+    "532a173f9dacb853f480352fcfab9f6de41c39fee99ccb2dff2fb09de76d0084": "COELBA",
+    "540a52706371fe7aa2243539413392827a8d9b9a998df7c66a499e3b762b9129": "COSERN",
+    "541d19910e91450b0900e14461124fbb8dcab4cc835075832e8c1c30c000a630": "COELBA",
+    "5575f0632540bcaac4d7dce9e0bd01076ec276bd57de52c3aed3ab9bf71d91b6": "PERNAMBUCO",
+    "559b15eb33e103cd584bf548709f4249515a7ccbee3aa8d581fdb8451fe4db86": "PERNAMBUCO",
+    "57449cea0c88e5397b07bc65c1b7863bdd34aabb8a33a0833956ae9e27a3c6f2": "COELBA",
+    "58ba31859849cb0bf3ccf606b0693a31b902b7d2aa5beaa2e034bf0b08b17c75": "COELBA",
+    "5cb2c707d082ecd51663f473a13648a0aacbca8141aa6497bb653ccf83989ca8": "PERNAMBUCO",
+    "5d1dc93a86aec2d818c94318f2de4d31fdd14a93ca9a5853b2769284af9f31de": "ELEKTRO",
+    "6145e40e2d621b4be7ca53f5fa54fcc411dd21856069991a9c033d5edd3f1f0b": "PERNAMBUCO",
+    "64ee658c74074ced66d02ede306cd4ee6418a3c4fa34f90dbb9ef40e72170d50": "PERNAMBUCO",
+    "669f50f4e18df9262aa498a82d550399b57f576781695342136050f15a9861df": "COELBA",
+    "68a673ee14b8cd15f06ef6caedc34958f41ca063e6049ec609cdfa33b3c7a498": "PERNAMBUCO",
+    "69a658cb739bfb2b69ab0a6dd05d1e51185bc4568f52b19be64193d8d2cee8b3": "BRASILIA",
+    "6cf8332ea6d6d39a16d16af4f0ee2a2ed120f9b22d44f15773b0eb52b84cbccf": "PERNAMBUCO",
+    "6d1b69d4c26ec50f99b179ffbfdb0a14b20660b599802418c9838c3b4de3628e": "PERNAMBUCO",
+    "6e5204b3953cf812afeca9f9829d1ddf83e79c55f7475a9017a830699323d087": "COSERN",
+    "6f0e2f2ec6c472015e9544356ac7217a5278e7f768ff870fd15405c656676c1e": "PERNAMBUCO",
+    "704d013b58a363ba0a57d3353369d9a114a5d91a6448a52193c613298491bdf5": "ELEKTRO",
+    "73c9dd6468abeceba29c662bfbe9cfc749d63a3af18151eeec842a79f6704549": "COSERN",
+    "7599051ad8db47ed0f9f8dc9b16d591cbf5ab62842af9d452c43ab138eb46970": "COSERN",
+    "76f413be3181a5655d46a2d1373fe7b391d448684a615144344874120631350b": "ELEKTRO",
+    "77cf5a06b4db70f89d157ab19bbe5e9129568e17dfe06b6f9d84809439e66f84": "COSERN",
+    "781b5ef8a18bb3b2bdd8801b583393ac5fe50da5d8d477672e5f3bce56dbc95f": "COSERN",
+    "7a9fe4cdfec02754d62556838ab7067be0dcd0d6b28500a14631d085f268418c": "ELEKTRO",
+    "7b19e1f573f2a1308bf3332c2fcd1b290f008bf12e6b7e402c4e4320c5b59a09": "COSERN",
+    "7c6a663392107d0e5ae77f2d2b283b07b3083db2fe4ec44e98cd2fc83f35d275": "PERNAMBUCO",
+    "82424822e1b1d7c5fca9ecd8118c7456e6ed4640ac32b543660c92333b3492c5": "PERNAMBUCO",
+    "83b791098d5c3c8b6df6301986fe288c0670f6faaa87cc91ea076121af44ae22": "ELEKTRO",
+    "83e9253e8f8de0446f05364e0cdd67536ec1866f65d6499a3bc9011de8b7d42c": "COSERN",
+    "853c90ebd011825270f758c0d89fc45dc311a5c3e66496ec0a836e23c87b83fd": "COSERN",
+    "87e214fc56dfbd4662070f742a9d86d094a27ee41ebc03b14229954780776994": "PERNAMBUCO",
+    "8818ab776664556b4f61cd389503467bb9a00cf723ae73c6bf821a1ba3182161": "PERNAMBUCO",
+    "8e7a156c57530a39fc94a6fefb6e92fddf28753ff336b318407bda79fa6a70e1": "ELEKTRO",
+    "8e8ee995d478e5d8148601ca0a7e0f192cd281208e193eaa90b738162b20bf34": "PERNAMBUCO",
+    "90788e1e3f160159a31e3dc098484ca80742c5fb4bcfc9a0a3bdcaa79bbfa2bc": "COSERN",
+    "95d5b2a664ab9729b89883989dd52a0093d97b0bd0a8ddc65cbb4859209686d8": "COELBA",
+    "95d6c206b08148e4a0a7ac4977e83a0b03973d8a2880e3960d3af93da39a94c9": "BRASILIA",
+    "95d8af09962ea89aac72f70b13840ccc589a294b38adb32c5f76e87c28a172f6": "COELBA",
+    "980997b7fbc1636c0fde56f0c668ed75b12d2a0d9298bdae292e0d8a474bece7": "COSERN",
+    "996e5f5f3122d5164f253befbe8de4f0e6cebd92cc5fb31bf45986c26ecdf493": "COSERN",
+    "997c880d0d73d5fe10d20698c6bac13bb7e00effd2342fd5ff8c16ab201971db": "COELBA",
+    "9b9dccc862753f85fb197be74a95218b52efdec8ce7b1983bea776b75b2f44d7": "PERNAMBUCO",
+    "9c13958a982d69a81092c2615073eda31ac98a545ecb02f2aa0677bd0e125d40": "COSERN",
+    "a279669303c2aa8b42fb592518ace55cd7829718b062fb174a3ec6aaf10b678e": "COELBA",
+    "a4bc4e201fc578ca7d64e907f27271d44a77625c00fb17582ee1f842a9229128": "BRASILIA",
+    "a4f164af81a6f0b00bd6993f7000946e9773a4f9ae2a06ec10e66c5667e5e576": "ELEKTRO",
+    "a6f3b69ed9aa14dbcfb13f12a6d687d27b4ccd9129baf701d4724127e24d8cfc": "COSERN",
+    "a8aa69a26805e80e1390075212e1e46871ee77f2e2417b733215f9d0c9c9cb33": "ELEKTRO",
+    "aaa706dfad089cbf42f17713e89f40ade6dbc03ff4a55c0e0376e52db3ec49df": "ELEKTRO",
+    "aaf7605007fc404f8e62e2a17684f03b59300bfa29795d9bc367fbf0f8bc61ae": "PERNAMBUCO",
+    "ac436088a64ce4dbde4f0de3c776cc080aee1724191c1ad0c1f3c22c4725bc31": "PERNAMBUCO",
+    "aff5b839d9846917517f7e7737f00772ae1b929fb47cee1577407928d9a39d88": "COSERN",
+    "b08c3f5adf8e2677703161c219e1f3e3b08492fe025c5bced28944754020609b": "COELBA",
+    "b3156bc3eca34691c5019c9840db0bdc49c4c2a5eaa34cb1cb3e3b95c3503c89": "COELBA",
+    "b529a8102deec3e6eacfff2eed309f2791ba08000b243f2ca0d1c2e61753f933": "COELBA",
+    "b55b8ad13d3717bbd59ca7a1f2e44e7bc00d7c2d01f989630582e90276d7607c": "PERNAMBUCO",
+    "b564aee73370f9b9d301ab8e58df6503bdfe5c11230ee75d54f77f7692997252": "PERNAMBUCO",
+    "b574252d3dc4ca7dc2321658ab1fbaa23b34b7b526056ebe91f523dcfb8075fd": "PERNAMBUCO",
+    "b8f7c87a1b02d97da729eb2e805c7753e168d874ffaef495da55399666bb559c": "ELEKTRO",
+    "bbe6a098db8c7db877fd90539cfdf586979ee3c46356ede336230f204032e05c": "COELBA",
+    "bbeb9434a3b98a32692c8e81ea15dd8cb67534b44b0defafe70b82bbd2bfd063": "PERNAMBUCO",
+    "bfb7f628fdb500eec2049b8dd0bbb725d10a552e4c4e18d8a9b338bc69597ba0": "BRASILIA",
+    "c084e634dc1b728574da198cd2ca2beceb239791e15a554fc09c612fb49fc037": "COSERN",
+    "c1da81f3d0acf7525a69d8a3873f45d9f174abfd6aacb378608552d83f0c1617": "COSERN",
+    "c2747bf85600ddf125e38b96ba55603cd7a130589ad457e9fb38647d68cc00d6": "COSERN",
+    "c27b3a6d923c117f68fe3c7edc9672219f4a69e9455222b42034d8db423bcaab": "BRASILIA",
+    "c28f8d0fb131a3a7b135847efc6b6b6883f1a9793f676c9d0fb53ad990c8e2e6": "BRASILIA",
+    "c2b3b3aab36a8c6efff214af8a8c2402178b77f527cd3a8ac102f9980b8dd4e0": "PERNAMBUCO",
+    "c558e1b9aad3aff4c1b70ae846be8014ad87f31c7ff73c70152934a60df6460c": "ELEKTRO",
+    "c57f4d6baccc252bd1d9fb4d475e9b92b28228e468b8c66f082e88009f4e7c9f": "COSERN",
+    "c5d1a794bbd5362d0c57531a356fde2b87a38e86d20ccc75df498e4a918d3719": "COELBA",
+    "c62b7e466d511ddaceffd582ba9acf3e695f1076fd4efc9641b328061bfd549f": "COELBA",
+    "cac6150dd5017dd1698be7bbac8bdb83c143a18f2885c3e7941c78dc31dabcfd": "BRASILIA",
+    "cb603bb1dafbe757a3f52b403886b7621e77ece251ac28d4441d12b9b305fadb": "COSERN",
+    "cde38a46d0c3e97105520cc381c38cbb67815354f17ee1fc30495e04ccb57332": "COSERN",
+    "ceeceb47c19520d0faff29149b2931b766b6055657054643c0cd3c74169268d7": "COSERN",
+    "cfde9fb9b58b9249494863f168fc15047ffcb65a0b86573e34a372dfe4025b71": "PERNAMBUCO",
+    "d0912d5b4dc58e1e98a6aefca45c2e9b68e466f5b4a9823ef18dc9e15dd6c9a5": "PERNAMBUCO",
+    "d25a9f85ee2c746a5d9553722a0c408b1801b427defb863c04264e5485549509": "ELEKTRO",
+    "d26c62755f40359bdc1fe89e355155f5dbd347a6d9bbabb35a507b0419254de6": "COELBA",
+    "d4d241d61998931175e7a3ab8ed4fce3c2fad8b611fe553e02d1ef06b6fd40e6": "ELEKTRO",
+    "d63cb882c2a0778094479a491417617be908a9de569b6c0102b4d80628e46de3": "ELEKTRO",
+    "d7737fba1254e4a693c1e845d59ede550249ce47f586eb0549f429bc7e0054d4": "PERNAMBUCO",
+    "d7cc9af3d3a1f75550211e06c3d8666bcd31437d0ba30fa4d2495ad66491c37c": "COELBA",
+    "d7f331821ff87e582115a7f3fdb11fba8aca3161814d61ca29ae84502b4a6553": "COELBA",
+    "d9de2d68081bf54342cd60876fdd9256983e88c0573665ec4b8252ae312e6041": "ELEKTRO",
+    "db5e4e9a4f0875417b3f0d78ea8b0cc4d0da953a594ae8db14ba43b33f53a91a": "COSERN",
+    "dc65148dd1c7bf7183b1aabeb631c7c590f310dfe489100c928a568535efc35d": "PERNAMBUCO",
+    "de56dd749723e4bc1ade07e00b5137265bc24e25f4738d0d3289a8c2b0f30e45": "COELBA",
+    "df1e8c645b275c91e4510a75cb670dcc1a2efa106bb779465986e0750d14fdde": "PERNAMBUCO",
+    "df771be6f0cea1c7608130d4a296ea609aa1374de5e0d6e3c569acab905127cd": "BRASILIA",
+    "dfe721e345d356bf5ee8ff8f623754a5c33dd40ac08a9991036dcf623f1f8528": "BRASILIA",
+    "e0d4afcc09bd3589f826ec148141b9d59419cf9154b4a07b7d6d3fff30b17601": "COELBA",
+    "e1acce676303c98443e68cd4e34508bb2a00acbf23e1dd3e538aa77c163c0f68": "COELBA",
+    "e28e6b07f3c4c6566569ccebc73fd31b4c2aba8221d8859ab0b5ac8b4bdb14ec": "PERNAMBUCO",
+    "e93936d87546ea3ea5956f279b69adf353ae430c365f7a8228cd35769bc516d2": "ELEKTRO",
+    "eab5ec64bf1a2c5b7f5b1e0b4b252a54240d65a3ace6215f905460deb8ba5db8": "COSERN",
+    "eb72df61c3c07be7d1e53ec783dcdba0c0b1f2f3bc833aa82f888362cb706d10": "COSERN",
+    "eb730d2a62d0ac3b5cfb1bd08cad07a46bcd42c38bc115704ffd9f0dd770e67d": "PERNAMBUCO",
+    "ebf8b01629c604667449d66e17102a6c9dbed848cec26c17db51164bfe667652": "COELBA",
+    "ece12d19830b92eaf80655eb42c8e669131379a012b669710a15f079b89c16f1": "ELEKTRO",
+    "ecf23b422c4a45424e75ced499b70182c7e34eadd4190a7bf53edca289821d38": "ELEKTRO",
+    "f112d6636d4aa231b9c18cae3f903ee775ffe5b5cab48f81e98c00e866e2448b": "ELEKTRO",
+    "f3545a85ec0da5746acde22629a21023a4b7bbf7d5e16b31417ef74c5528b804": "PERNAMBUCO",
+    "f84ddce3ca45c488dcf5de3c0efb6b2c8b7c080b4bd73751f00219ee247efab0": "COELBA",
+    "fb33a272170c6ce1661220ec0986095becaa1bbfb121454d2c5ac5412b076952": "BRASILIA",
+    "fbada4fde7cec0eef11e41ecae2781fcc28131fcfc9d33f2aef21ec6313033af": "COELBA",
+    "fd5d8f4a81dfb3e104b7697bde1bc710335d7c47a8cdef9e761d23ffb86e31e1": "PERNAMBUCO",
+}
+
+PAUSE_RULES: dict[str, dict[str, Any]] = {
+    "refeicao": {
+        "label": "Refeição",
+        "limit_seconds": 60 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: O(A) colaborador(a) "
+            "{name} ({unit}) ultrapassou o tempo limite de 1h estabelecido "
+            "para a pausa Refeição. Por favor, verificar a situação com o "
+            "operador."
+        ),
+    },
+    "saude": {
+        "label": "Saúde",
+        "limit_seconds": 20 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: Identificado excesso de "
+            "tempo na pausa Saúde do(a) colaborador(a) {name} ({unit}) "
+            "(limite de 20min). Por favor, alinhar com o operador para "
+            "verificar se há necessidade de suporte médico adicional."
+        ),
+    },
+    "particular": {
+        "label": "Particular",
+        "limit_seconds": 10 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: O(A) colaborador(a) "
+            "{name} ({unit}) excedeu o limite regular de 10min para a pausa "
+            "Particular. Solicita-se a verificação do status junto ao operador."
+        ),
+    },
+    "emergencia brigada": {
+        "label": "Emergência (Brigada)",
+        "limit_seconds": 20 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: Registrado estouro no "
+            "tempo de pausa Emergência (limite de 20min) para o(a) "
+            "colaborador(a) {name} ({unit}). Por favor, acompanhar para "
+            "validar a situação com a Brigada."
+        ),
+    },
+    "feedback": {
+        "label": "Feedback",
+        "limit_seconds": 20 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: O tempo estipulado para a "
+            "pausa Feedback (20min) foi ultrapassado pelo(a) colaborador(a) "
+            "{name} ({unit}). Por favor, certificar-se de que o alinhamento "
+            "com a liderança foi concluído."
+        ),
+    },
+    "apoio operacao": {
+        "label": "Apoio Operação",
+        "limit_seconds": 30 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: Registrada ultrapassagem "
+            "do limite de 30min na atividade de Apoio Operação pelo(a) "
+            "colaborador(a) {name} da {unit}. Por favor, orientar o retorno "
+            "ao atendimento caso não seja mais necessário continuar com o "
+            "apoio à operação."
+        ),
+    },
+    "pausa encerramento": {
+        "label": "Pausa Encerramento",
+        "limit_seconds": 20 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: O(A) colaborador(a) "
+            "{name} ({unit}) excedeu o limite de 20min para a Pausa "
+            "Encerramento. Por favor, verificar se há dificuldades na "
+            "finalização dos últimos chamados."
+        ),
+    },
+    "pre pausa": {
+        "label": "Pré-pausa",
+        "limit_seconds": 30 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: Identificada ultrapassagem "
+            "no tempo de Pré-pausa (limite de 30min) do(a) colaborador(a) "
+            "{name} ({unit}). Por favor, checar a transição para a pausa "
+            "programada ou fila de atendimento."
+        ),
+    },
+    "problemas tecnicos sistemicos": {
+        "label": "Problemas Técnicos / Sistêmicos",
+        "limit_seconds": 30 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: O(A) colaborador(a) "
+            "{name} ({unit}) ultrapassou os 30min em pausa de Problemas "
+            "Técnicos/Sistêmicos. Por favor, intervir para validar se há "
+            "necessidade de abertura de chamado junto ao suporte de TI."
+        ),
+    },
+    "treinamento capacitacao": {
+        "label": "Treinamento / Capacitação",
+        "limit_seconds": 60 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: Registrado estouro no "
+            "tempo limite de 1h para a pausa Treinamento do(a) colaborador(a) "
+            "{name} ({unit}). Por favor, orientar o encerramento da "
+            "capacitação."
+        ),
+    },
+    "descanso": {
+        "label": "Descanso",
+        "limit_seconds": 10 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: O(A) colaborador(a) "
+            "{name} ({unit}) excedeu os 10min estipulados para a pausa "
+            "regulamentar de Descanso. Por favor, solicitar o retorno à fila."
+        ),
+    },
+    "pausa transferencia": {
+        "label": "Pausa Transferência",
+        "limit_seconds": 20 * 60,
+        "alert": (
+            "📢 Notificação de Estouro de Pausa: Identificado excesso de "
+            "tempo na Pausa Transferência (limite de 20min) do(a) "
+            "colaborador(a) {name} ({unit}). Por favor, averiguar se há "
+            "inconsistências na mudança de filas ou distribuidoras."
+        ),
+    },
+    "pausa sem justificativa": {
+        "label": "Pausa Sem Justificativa",
+        "limit_seconds": 10 * 60,
+        "alert": (
+            "📢 Notificação de Pausa: Identificado que o(a) colaborador(a) "
+            "{name} ({unit}) encontra-se em status de pausa sem justificativa "
+            "selecionada no sistema. Por favor, alertar o colaborador para "
+            "regularizar o status."
+        ),
+    },
 }
 
 
@@ -1916,11 +2206,520 @@ def login_report_unit(value: Any) -> str | None:
     return None
 
 
+def pause_roster_unit(login: Any, attendant: Any) -> str | None:
+    """Localiza a distribuidora no novo quadro protegido da EPS Logos."""
+
+    candidates: list[str] = []
+    for raw_value in (login, attendant):
+        normalized = normalize_identifier(raw_value)
+        if not normalized:
+            continue
+        candidates.append(normalized)
+        alias = LOGOS_IDENTIFIER_ALIASES.get(normalized)
+        if alias:
+            candidates.append(alias)
+
+    for candidate in candidates:
+        candidate_hash = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
+        unit_code = PAUSE_ROSTER_UNIT_BY_HASH.get(candidate_hash)
+        if unit_code:
+            return unit_code
+    return None
+
+
+def pause_rule(value: Any) -> tuple[str, dict[str, Any] | None]:
+    """Associa o nome retornado pela Mutant à regra de tempo cadastrada."""
+
+    normalized = normalize_identifier(value)
+    normalized = re.sub(r"^\d+\s+", "", normalized).strip()
+    if normalized in PAUSE_RULES:
+        return normalized, PAUSE_RULES[normalized]
+
+    for rule_key, rule in PAUSE_RULES.items():
+        if normalized and (
+            normalized in rule_key or rule_key in normalized
+        ):
+            return rule_key, rule
+    return normalized, None
+
+
+def collect_current_logos_pauses(
+    runtime_units: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+    """Consulta pausas atuais e filtra somente o novo quadro da Logos."""
+
+    selected_unit_codes = {item["unit"].code for item in runtime_units}
+    now = datetime.now(BRASILIA_TZ)
+    errors: dict[str, str] = {}
+    raw_by_client: dict[int, list[dict[str, Any]]] = {}
+    error_by_client: dict[int, str] = {}
+
+    for item in runtime_units:
+        client = item.get("client")
+        unit = item["unit"]
+        if client is None:
+            errors[unit.code] = (
+                item.get("errors", {}).get("authentication")
+                or "Autenticação indisponível."
+            )
+            continue
+
+        client_identity = id(client)
+        if client_identity in raw_by_client:
+            if client_identity in error_by_client:
+                errors[unit.code] = error_by_client[client_identity]
+            continue
+
+        try:
+            raw_by_client[client_identity] = client.supervisor_agents()
+        except MutantApiError as exc:
+            raw_by_client[client_identity] = []
+            error_by_client[client_identity] = str(exc)
+            errors[unit.code] = error_by_client[client_identity]
+
+    rows_by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    api_agents = 0
+    roster_agents: set[tuple[str, str]] = set()
+    paused_outside_roster = 0
+    unknown_pause_types: set[str] = set()
+
+    for records in raw_by_client.values():
+        api_agents += len(records)
+        for record in records:
+            user = record.get("user")
+            if not isinstance(user, dict):
+                user = {}
+
+            login = str(user.get("username") or "").strip()
+            attendant = str(
+                user.get("full_name")
+                or " ".join(
+                    filter(
+                        None,
+                        [
+                            str(user.get("first_name") or "").strip(),
+                            str(user.get("last_name") or "").strip(),
+                        ],
+                    )
+                )
+                or login
+                or "—"
+            ).strip()
+
+            unit_code = pause_roster_unit(login, attendant)
+            pause_data = record.get("work_pause_time")
+
+            if unit_code:
+                roster_agents.add((unit_code, login or normalize_identifier(attendant)))
+            elif isinstance(pause_data, dict):
+                paused_outside_roster += 1
+                continue
+
+            if unit_code not in selected_unit_codes:
+                continue
+            if not isinstance(pause_data, dict):
+                continue
+
+            raw_pause_name = str(
+                pause_data.get("work_pause_time__name")
+                or pause_data.get("name")
+                or "Pausa não informada"
+            ).strip()
+            start_date = parse_api_datetime(pause_data.get("start_date"))
+            if start_date is None:
+                continue
+
+            elapsed_seconds = max(
+                0,
+                int((now - start_date.astimezone(BRASILIA_TZ)).total_seconds()),
+            )
+            _, rule = pause_rule(raw_pause_name)
+
+            if rule:
+                pause_name = str(rule["label"])
+                limit_seconds: int | None = int(rule["limit_seconds"])
+                exceeded_seconds = max(0, elapsed_seconds - limit_seconds)
+                exceeded = elapsed_seconds > limit_seconds
+                status = "🔴 Extrapolada" if exceeded else "🟢 Dentro do limite"
+                alert = (
+                    str(rule["alert"]).format(
+                        name=attendant,
+                        unit=UNIT_SHORT_NAMES.get(unit_code, unit_code),
+                    )
+                    if exceeded
+                    else ""
+                )
+            else:
+                pause_name = raw_pause_name
+                limit_seconds = None
+                exceeded_seconds = 0
+                exceeded = False
+                status = "⚪ Limite não cadastrado"
+                alert = ""
+                unknown_pause_types.add(raw_pause_name)
+
+            dedup_key = (unit_code, login or normalize_identifier(attendant))
+            rows_by_key[dedup_key] = {
+                "agent_id": str(record.get("id") or ""),
+                "Login": login or "—",
+                "Colaborador": attendant,
+                "unit_code": unit_code,
+                "Distribuidora": UNIT_SHORT_NAMES.get(unit_code, unit_code),
+                "Tipo de pausa": pause_name,
+                "Tempo atual": format_seconds(elapsed_seconds),
+                "time_seconds": elapsed_seconds,
+                "Limite": (
+                    format_seconds(limit_seconds)
+                    if limit_seconds is not None
+                    else "—"
+                ),
+                "limit_seconds": limit_seconds,
+                "Situação": status,
+                "Excedido": (
+                    format_seconds(exceeded_seconds) if exceeded else "—"
+                ),
+                "exceeded": exceeded,
+                "exceeded_seconds": exceeded_seconds,
+                "alert": alert,
+            }
+
+    audit = {
+        "api_agents": api_agents,
+        "logos_roster_agents": len(roster_agents),
+        "paused_outside_roster": paused_outside_roster,
+        "unknown_pause_types": sorted(unknown_pause_types),
+        "updated_at": now.isoformat(),
+    }
+    return list(rows_by_key.values()), errors, audit
+
+
+def render_pause_monitor(runtime_units: list[dict[str, Any]]) -> None:
+    """Renderiza filtros, indicadores, tabela e alertas de pausa."""
+
+    context = tuple(sorted(item["unit"].code for item in runtime_units))
+    snapshot_key = "pause_monitor_snapshot_manual"
+    snapshot = st.session_state.get(snapshot_key)
+    if not isinstance(snapshot, dict) or snapshot.get("context") != context:
+        snapshot = {
+            "context": context,
+            "loaded": False,
+            "rows": [],
+            "errors": {},
+            "audit": {},
+            "updated_at": None,
+        }
+        st.session_state[snapshot_key] = snapshot
+
+    title_slot = st.empty()
+    refresh_requested = st.button(
+        "Atualizar pausas",
+        key="refresh_pause_monitor",
+        use_container_width=False,
+    )
+
+    raw_updated_at = snapshot.get("updated_at")
+    previous_updated_at = parse_api_datetime(raw_updated_at)
+    now = datetime.now(BRASILIA_TZ)
+    seconds_since_refresh = (
+        (now - previous_updated_at.astimezone(BRASILIA_TZ)).total_seconds()
+        if previous_updated_at
+        else None
+    )
+    automatic_refresh_due = (
+        not bool(snapshot.get("loaded"))
+        or seconds_since_refresh is None
+        or seconds_since_refresh >= PAUSE_AUTO_REFRESH_SECONDS - 5
+    )
+
+    if refresh_requested or automatic_refresh_due:
+        spinner_message = (
+            "Atualizando pausas na Mutant..."
+            if refresh_requested
+            else "Consultando pausas automaticamente na Mutant..."
+        )
+        with st.spinner(spinner_message):
+            rows, errors, audit = collect_current_logos_pauses(runtime_units)
+        snapshot = {
+            "context": context,
+            "loaded": True,
+            "rows": rows,
+            "errors": errors,
+            "audit": audit,
+            "updated_at": datetime.now(BRASILIA_TZ).isoformat(),
+        }
+        st.session_state[snapshot_key] = snapshot
+
+    loaded = bool(snapshot.get("loaded"))
+    rows = list(snapshot.get("rows") or [])
+    errors = dict(snapshot.get("errors") or {})
+    audit = dict(snapshot.get("audit") or {})
+    raw_updated_at = snapshot.get("updated_at")
+    updated_at = parse_api_datetime(raw_updated_at)
+
+    if updated_at:
+        subtitle = (
+            "Colaboradores da EPS Logos · última consulta em "
+            f"{updated_at.astimezone(BRASILIA_TZ).strftime('%d/%m/%Y às %H:%M:%S')}"
+        )
+    else:
+        subtitle = (
+            "Colaboradores da EPS Logos · atualização automática a cada "
+            "5 minutos ou imediata pelo botão"
+        )
+
+    with title_slot.container():
+        render_section_title(
+            "Monitoramento de pausas",
+            subtitle,
+            healthy=not errors,
+        )
+
+    if not loaded:
+        st.info(
+            "A primeira consulta será feita automaticamente. Se necessário, "
+            "use **Atualizar pausas** para tentar novamente."
+        )
+        return
+
+    exceeded_rows = [row for row in rows if row["exceeded"]]
+    within_rows = [
+        row
+        for row in rows
+        if not row["exceeded"] and row["limit_seconds"] is not None
+    ]
+    longest_seconds = max(
+        (int(row["time_seconds"]) for row in rows),
+        default=0,
+    )
+
+    summary_columns = st.columns(4)
+    with summary_columns[0]:
+        render_metric_card(
+            "Em pausa agora",
+            len(rows),
+            "⏸",
+            "Somente colaboradores do novo quadro Logos",
+            accent=True,
+        )
+    with summary_columns[1]:
+        render_metric_card(
+            "Dentro do limite",
+            len(within_rows),
+            "●",
+            "Pausas com limite conhecido",
+        )
+    with summary_columns[2]:
+        render_metric_card(
+            "Pausas extrapoladas",
+            len(exceeded_rows),
+            "!",
+            "Tempo atual maior que o limite",
+            accent=True,
+        )
+    with summary_columns[3]:
+        render_metric_card(
+            "Maior pausa atual",
+            format_seconds(longest_seconds),
+            "⌛",
+            "Maior duração entre as pausas atuais",
+        )
+
+    if errors:
+        for unit_code, message in errors.items():
+            st.warning(
+                f"{UNIT_SHORT_NAMES.get(unit_code, unit_code)}: {message}"
+            )
+
+    if not rows:
+        st.info(
+            "Nenhum colaborador do novo quadro Logos está em pausa neste "
+            "momento."
+        )
+        with st.expander("Conferência da consulta de pausas"):
+            st.json(audit)
+        return
+
+    distributor_options = sorted({row["Distribuidora"] for row in rows})
+    pause_type_options = sorted({row["Tipo de pausa"] for row in rows})
+    distributor_widget_options = ["Todas", *distributor_options]
+    if st.session_state.get("pause_distributor_filter") not in (
+        None,
+        *distributor_widget_options,
+    ):
+        st.session_state["pause_distributor_filter"] = "Todas"
+    if "pause_type_filter" in st.session_state:
+        st.session_state["pause_type_filter"] = [
+            value
+            for value in st.session_state["pause_type_filter"]
+            if value in pause_type_options
+        ]
+
+    st.markdown(
+        '<div style="height: 28px;"></div>',
+        unsafe_allow_html=True,
+    )
+    
+    filter_columns = st.columns([1, 1.5, 1.2, 1.3])
+
+    with filter_columns[0]:
+        distributor_filter = st.selectbox(
+            "Distribuidora",
+            distributor_widget_options,
+            key="pause_distributor_filter",
+        )
+    with filter_columns[1]:
+        pause_type_filter = st.multiselect(
+            "Tipo de pausa",
+            pause_type_options,
+            default=pause_type_options,
+            key="pause_type_filter",
+        )
+    with filter_columns[2]:
+        status_filter = st.selectbox(
+            "Situação",
+            [
+                "Todas",
+                "Extrapoladas",
+                "Dentro do limite",
+                "Limite não cadastrado",
+            ],
+            key="pause_status_filter",
+        )
+    with filter_columns[3]:
+        order_filter = st.selectbox(
+            "Organizar por",
+            [
+                "Extrapoladas primeiro",
+                "Maior tempo de pausa",
+                "Menor tempo de pausa",
+                "Tipo de pausa",
+                "Distribuidora",
+            ],
+            key="pause_order_filter",
+        )
+
+    filtered_rows = list(rows)
+    if distributor_filter != "Todas":
+        filtered_rows = [
+            row
+            for row in filtered_rows
+            if row["Distribuidora"] == distributor_filter
+        ]
+    filtered_rows = [
+        row
+        for row in filtered_rows
+        if row["Tipo de pausa"] in pause_type_filter
+    ]
+    if status_filter == "Extrapoladas":
+        filtered_rows = [row for row in filtered_rows if row["exceeded"]]
+    elif status_filter == "Dentro do limite":
+        filtered_rows = [
+            row
+            for row in filtered_rows
+            if not row["exceeded"] and row["limit_seconds"] is not None
+        ]
+    elif status_filter == "Limite não cadastrado":
+        filtered_rows = [
+            row for row in filtered_rows if row["limit_seconds"] is None
+        ]
+
+    if order_filter == "Maior tempo de pausa":
+        filtered_rows.sort(key=lambda row: -int(row["time_seconds"]))
+    elif order_filter == "Menor tempo de pausa":
+        filtered_rows.sort(key=lambda row: int(row["time_seconds"]))
+    elif order_filter == "Tipo de pausa":
+        filtered_rows.sort(
+            key=lambda row: (
+                normalize_identifier(row["Tipo de pausa"]),
+                -int(row["time_seconds"]),
+            )
+        )
+    elif order_filter == "Distribuidora":
+        filtered_rows.sort(
+            key=lambda row: (
+                normalize_identifier(row["Distribuidora"]),
+                -int(row["time_seconds"]),
+            )
+        )
+    else:
+        filtered_rows.sort(
+            key=lambda row: (
+                not bool(row["exceeded"]),
+                -int(row["exceeded_seconds"]),
+                -int(row["time_seconds"]),
+            )
+        )
+
+    table_rows = [
+        {
+            "Situação": row["Situação"],
+            "Colaborador": row["Colaborador"],
+            "Distribuidora": row["Distribuidora"],
+            "Tipo de pausa": row["Tipo de pausa"],
+            "Tempo atual": row["Tempo atual"],
+            "Limite": row["Limite"],
+            "Excedido": row["Excedido"],
+        }
+        for row in filtered_rows
+    ]
+
+    if table_rows:
+        st.dataframe(
+            pd.DataFrame(table_rows),
+            use_container_width=True,
+            hide_index=True,
+            height=min(620, 42 + 35 * len(table_rows)),
+            column_config={
+                "Situação": st.column_config.TextColumn(width="medium"),
+                "Colaborador": st.column_config.TextColumn(width="large"),
+                "Distribuidora": st.column_config.TextColumn(width="small"),
+                "Tipo de pausa": st.column_config.TextColumn(width="medium"),
+                "Tempo atual": st.column_config.TextColumn(width="small"),
+                "Limite": st.column_config.TextColumn(width="small"),
+                "Excedido": st.column_config.TextColumn(width="small"),
+            },
+        )
+    else:
+        st.info("Nenhuma pausa corresponde aos filtros selecionados.")
+
+    visible_alerts = [
+        row for row in filtered_rows if row["exceeded"] and row["alert"]
+    ]
+    if visible_alerts:
+        with st.expander(
+            f"Alertas prontos para copiar ({len(visible_alerts)})",
+            expanded=False,
+        ):
+            for position, row in enumerate(visible_alerts):
+                st.markdown(
+                    f"**{row['Colaborador']} · {row['Distribuidora']} · "
+                    f"{row['Tipo de pausa']}**"
+                )
+                st.code(row["alert"], language=None)
+                if position < len(visible_alerts) - 1:
+                    st.divider()
+
+    with st.expander("Conferência da consulta de pausas", expanded=False):
+        st.write(
+            f"**Atendentes recebidos da API:** {audit['api_agents']}  "
+            f"\n**Colaboradores reconhecidos no quadro Logos:** "
+            f"{audit['logos_roster_agents']}  "
+            f"\n**Pausados de outras empresas desconsiderados:** "
+            f"{audit['paused_outside_roster']}"
+        )
+        if audit["unknown_pause_types"]:
+            st.warning(
+                "Tipos sem limite cadastrado: "
+                + ", ".join(audit["unknown_pause_types"])
+            )
+
+
 def empty_headcount_result() -> dict[str, Any]:
     """Estrutura padrão quando nenhum relatório Login/Logout foi importado."""
 
     return {
         "counts": {unit.code: None for unit in UNITS},
+        "daily_counts": {unit.code: None for unit in UNITS},
         "people": [],
         "files": [],
         "total_online_logins": 0,
@@ -2121,6 +2920,12 @@ def parse_login_logout_reports(
             online_by_login[record["login"]] = record
 
     unique_online = list(online_by_login.values())
+    logos_logged_today = [
+        record
+        for record in records
+        if record["unit_code"]
+        and is_logos_employee(record["login"], record["attendant"])
+    ]
     checked = [
         {
             "record": record,
@@ -2140,11 +2945,21 @@ def parse_login_logout_reports(
     counts: dict[str, int | None] = {
         unit.code: (0 if unit.code in loaded_units else None) for unit in UNITS
     }
+    daily_counts: dict[str, int | None] = {
+        unit.code: (0 if unit.code in loaded_units else None) for unit in UNITS
+    }
     for unit_code in loaded_units:
         counts[unit_code] = len(
             {
                 record["login"]
                 for record in logos_records
+                if record["unit_code"] == unit_code
+            }
+        )
+        daily_counts[unit_code] = len(
+            {
+                record["login"]
+                for record in logos_logged_today
                 if record["unit_code"] == unit_code
             }
         )
@@ -2186,6 +3001,7 @@ def parse_login_logout_reports(
     result.update(
         {
             "counts": counts,
+            "daily_counts": daily_counts,
             "people": [
                 {
                     "Login": record["login"],
@@ -2239,9 +3055,15 @@ def merge_headcount_results(
             continue
         if unit.code in automatic_units:
             merged["counts"][unit.code] = automatic["counts"][unit.code]
+            merged["daily_counts"][unit.code] = automatic["daily_counts"][
+                unit.code
+            ]
             merged["source_by_unit"][unit.code] = "API automática"
         elif unit.code in fallback_units:
             merged["counts"][unit.code] = fallback["counts"][unit.code]
+            merged["daily_counts"][unit.code] = fallback["daily_counts"][
+                unit.code
+            ]
             merged["source_by_unit"][unit.code] = "Upload de contingência"
 
     merged["loaded_units"] = sorted(
@@ -2331,6 +3153,10 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
         status_text = "Com alerta" if errors else "Atualizado"
         logged_logos = summary["logged_logos"]
         logged_logos_text = "—" if logged_logos is None else str(logged_logos)
+        logged_today_logos = summary["logged_today_logos"]
+        logged_today_logos_text = (
+            "—" if logged_today_logos is None else str(logged_today_logos)
+        )
         headcount_source = summary.get("headcount_source")
         source_label = (
             "API"
@@ -2371,7 +3197,7 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                     <div class="unit-card-stat"><span>Atendimentos abertos</span><strong>{summary['open_count']}</strong></div>
                     <div class="unit-card-stat"><span>Fila de espera</span><strong>{summary['waiting_count']}</strong></div>
                     <div class="unit-card-stat logged"><span>Logados Atuais · {source_label}</span><strong>{logged_logos_text}</strong></div>
-                    <div class="unit-card-stat"><span>Com produtividade</span><strong>{summary['unique_agents']}</strong></div>
+                    <div class="unit-card-stat"><span>Logaram hoje · {source_label}</span><strong>{logged_today_logos_text}</strong></div>
                     <div class="unit-card-stat"><span>Dia anterior</span><strong>{summary['previous_day']}</strong></div>
                 </div>
             </article>
@@ -3292,12 +4118,14 @@ for index, unit in enumerate(selected_units, start=1):
         "previous_day": previous_day,
         "tah_seconds": tah_seconds,
         "logged_logos": None,
+        "logged_today_logos": None,
         "tme_values": tme_values,
         "tme_ticket_counts": tme_ticket_counts,
     }
 
     unit_runtime = {
         "unit": unit,
+        "client": client if authentication_ok else None,
         "credential_label": credential_label,
         "authentication_ok": authentication_ok,
         "ticket_stats": ticket_stats,
@@ -3359,8 +4187,10 @@ diagnostic_result["headcount_logos"] = headcount_result
 for item in runtime_units:
     unit_code = item["unit"].code
     logged_logos = headcount_result["counts"].get(unit_code)
+    logged_today_logos = headcount_result["daily_counts"].get(unit_code)
     headcount_source = headcount_result["source_by_unit"].get(unit_code)
     item["summary"]["logged_logos"] = logged_logos
+    item["summary"]["logged_today_logos"] = logged_today_logos
     item["summary"]["headcount_source"] = headcount_source
     diagnostic_result["units"][unit_code]["logged_logos"] = logged_logos
     diagnostic_result["units"][unit_code]["headcount_source"] = headcount_source
@@ -3390,10 +4220,11 @@ for item in runtime_units:
 # Navegação principal
 # ---------------------------------------------------------------------------
 
-overview_tab, productivity_tab, tme_tab, technical_tab = st.tabs(
+overview_tab, productivity_tab, pause_tab, tme_tab, technical_tab = st.tabs(
     [
         "Visão Geral",
         "Produtividade por Atendente",
+        "Monitoramento de Pausas",
         "Relatório de TME",
         "Diagnóstico Técnico",
     ]
@@ -3570,6 +4401,19 @@ with productivity_tab:
             )
 
         st.divider()
+
+
+with pause_tab:
+    def pause_monitor_fragment_body() -> None:
+        render_pause_monitor(runtime_units)
+
+    if hasattr(st, "fragment"):
+        st.fragment(
+            pause_monitor_fragment_body,
+            run_every=PAUSE_AUTO_REFRESH_SECONDS,
+        )()
+    else:
+        pause_monitor_fragment_body()
 
 
 with tme_tab:
