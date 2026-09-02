@@ -1,3 +1,5 @@
+################################################
+
 """Dashboard local de monitoramento integrado ao Mutant360.
 
 Esta versão altera somente a apresentação da aplicação. As consultas,
@@ -80,7 +82,7 @@ TME_DISTRIBUTOR_BY_CODE = {
     "COSERN": "Cosern",
 }
 TME_QUEUE_LIMITS = {
-    "LL-TT": "02:00:00",
+    "LN-TT": "02:00:00",
     "Principal": "00:30:00",
 }
 
@@ -2714,7 +2716,7 @@ def infer_tme_campaign_queues(
 
         detected_queue = queue_label(campaign_name)
         queue_by_campaign[campaign_id] = (
-            "LL-TT"
+            "LN-TT"
             if detected_queue == "Ligação Nova e Troca"
             else "Principal"
         )
@@ -2724,7 +2726,7 @@ def infer_tme_campaign_queues(
     if len(campaign_ids) == 2 and len(queue_by_campaign) == 1:
         identified_queue = next(iter(queue_by_campaign.values()))
         complementary_queue = (
-            "Principal" if identified_queue == "LL-TT" else "LL-TT"
+            "Principal" if identified_queue == "LN-TT" else "LL-TT"
         )
         for campaign_id in campaign_ids:
             if campaign_id not in queue_by_campaign:
@@ -3782,7 +3784,7 @@ with tme_tab:
         )
     else:
         st.info(
-            "O reporte completo será liberado quando LL-TT e Principal "
+            "O reporte completo será liberado quando LN-TT e Principal "
             "estiverem disponíveis para as cinco distribuidoras."
         )
 
