@@ -1,5 +1,4 @@
 ################################################
-
 """Dashboard local de monitoramento integrado ao Mutant360.
 
 Esta versão altera somente a apresentação da aplicação. As consultas,
@@ -53,10 +52,10 @@ UNIT_SHORT_NAMES = {
 
 UNIT_ICONS = {
     "BRASILIA": "🏙️",
-    "COELBA": "☀️",
-    "PERNAMBUCO": "🌊",
+    "COELBA": "💃🏾",
+    "PERNAMBUCO": "⛱️",
     "ELEKTRO": "⚡",
-    "COSERN": "🌬️",
+    "COSERN": "☀️",
 }
 
 # Metas usadas no dashboard publicado: HC planejado por distribuidora
@@ -1289,6 +1288,8 @@ def inject_styles() -> None:
             gap: .42rem;
             padding-top: .65rem;
             border-top: 1px solid #edf0f4;
+            border-bottom: 1px solid #edf0f4;
+            padding-bottom: .65rem;
         }
 
         .unit-card-queue span {
@@ -2362,16 +2363,16 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                         <strong>{html.escape(tma)}</strong>
                     </div>
                 </div>
+                <div class="unit-card-queues">
+                    <div class="unit-card-queue"><span>Fila Principal - Produtividade:</span><strong>{summary['principal_total']}</strong></div>
+                    <div class="unit-card-queue"><span>Ligação Nova e Troca - Produtividade:</span><strong>{summary['special_total']}</strong></div>
+                </div>
                 <div class="unit-card-stats">
                     <div class="unit-card-stat"><span>Atendimentos abertos</span><strong>{summary['open_count']}</strong></div>
                     <div class="unit-card-stat"><span>Fila de espera</span><strong>{summary['waiting_count']}</strong></div>
                     <div class="unit-card-stat logged"><span>Logados Atuais · {source_label}</span><strong>{logged_logos_text}</strong></div>
                     <div class="unit-card-stat"><span>Com produtividade</span><strong>{summary['unique_agents']}</strong></div>
                     <div class="unit-card-stat"><span>Dia anterior</span><strong>{summary['previous_day']}</strong></div>
-                </div>
-                <div class="unit-card-queues">
-                    <div class="unit-card-queue"><span>Fila Principal</span><strong>{summary['principal_total']}</strong></div>
-                    <div class="unit-card-queue"><span>Ligação Nova e Troca</span><strong>{summary['special_total']}</strong></div>
                 </div>
             </article>
             """

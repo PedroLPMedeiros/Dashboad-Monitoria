@@ -48,7 +48,7 @@ UNITS: tuple[UnitConfig, ...] = (
     ),
     UnitConfig(
         code="PERNAMBUCO",
-        label="Pernambuco",
+        label="Pernambuco/Celpe",
         base_url="https://neoenergiapernambuco.mutant360.com.br",
         campaign_ids=(
             "aad79933-7d1d-4267-aa01-29c57d40d6af",
