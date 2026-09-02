@@ -67,6 +67,9 @@ UNIT_PLANNED_HEADCOUNT = {
     "ELEKTRO": 10,
     "COSERN": 14,
 }
+GENERAL_DAILY_PRODUCTIVITY_GOAL = (
+    sum(UNIT_PLANNED_HEADCOUNT.values()) * DAILY_PRODUCTIVITY_PER_HC
+)
 
 TME_DISTRIBUTORS = ("BSB", "Coelba", "Pernambuco", "Elektro", "Cosern")
 TME_DISTRIBUTOR_BY_CODE = {
@@ -904,6 +907,87 @@ def inject_styles() -> None:
             font-size: .61rem;
         }
 
+        .overall-goal-card {
+            margin: .75rem 0 .9rem;
+            padding: 1.05rem 1.15rem;
+            overflow: hidden;
+            border: 1px solid rgba(255, 255, 255, .24);
+            border-radius: 11px;
+            color: #ffffff;
+            background:
+                radial-gradient(
+                    circle at 92% 15%,
+                    rgba(216, 180, 254, .32),
+                    transparent 28%
+                ),
+                linear-gradient(135deg, #7c3aed 0%, #5b21b6 100%);
+            box-shadow: 0 8px 22px rgba(91, 33, 182, .22);
+        }
+
+        .overall-goal-top,
+        .overall-goal-detail {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+        }
+
+        .overall-goal-label {
+            display: block;
+            color: rgba(255, 255, 255, .82);
+            font-size: .65rem;
+            font-weight: 750;
+            letter-spacing: .035em;
+            text-transform: uppercase;
+        }
+
+        .overall-goal-value {
+            display: block;
+            margin-top: .22rem;
+            color: #ffffff;
+            font-size: clamp(1.7rem, 3vw, 2.25rem);
+            font-weight: 850;
+            letter-spacing: -.04em;
+            line-height: 1;
+        }
+
+        .overall-goal-badge {
+            flex: 0 0 auto;
+            padding: .36rem .58rem;
+            border: 1px solid rgba(255, 255, 255, .25);
+            border-radius: 999px;
+            color: #ffffff;
+            background: rgba(255, 255, 255, .13);
+            font-size: .61rem;
+            font-weight: 750;
+        }
+
+        .overall-goal-track {
+            height: .58rem;
+            margin-top: .8rem;
+            overflow: hidden;
+            border-radius: 999px;
+            background: rgba(255, 255, 255, .2);
+        }
+
+        .overall-goal-fill {
+            height: 100%;
+            border-radius: inherit;
+            background: linear-gradient(90deg, #ffffff, #d8b4fe);
+            box-shadow: 0 0 10px rgba(255, 255, 255, .28);
+        }
+
+        .overall-goal-detail {
+            margin-top: .55rem;
+            color: rgba(255, 255, 255, .86);
+            font-size: .64rem;
+        }
+
+        .overall-goal-detail strong {
+            color: #ffffff;
+            font-weight: 800;
+        }
+
         [data-baseweb="tab-list"] {
             gap: .25rem;
             padding: .35rem;
@@ -1596,6 +1680,17 @@ def inject_styles() -> None:
             .tme-card-grid {
                 grid-template-columns: 1fr;
             }
+
+            .overall-goal-top,
+            .overall-goal-detail {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: .42rem;
+            }
+
+            .overall-goal-badge {
+                align-self: flex-start;
+            }
         }
 
         </style>
@@ -1657,6 +1752,69 @@ def render_metric_card(
         """,
         unsafe_allow_html=True,
     )
+
+
+def render_overall_goal_card(actual: int, goal: int) -> dict[str, Any]:
+    """Exibe o cumprimento da meta geral diária fixa das cinco unidades."""
+
+    percentage = (actual / goal * 100) if goal else 0.0
+    displayed_percentage = f"{percentage:.1f}".replace(".", ",")
+    fill_width = min(100.0, max(0.0, percentage))
+    difference = actual - goal
+    if difference > 0:
+        progress_note = (
+            f"Meta superada em {format_integer_pt(difference)} atendimentos"
+        )
+    elif difference == 0:
+        progress_note = "Meta diária atingida"
+    else:
+        progress_note = (
+            f"Faltam {format_integer_pt(abs(difference))} atendimentos"
+        )
+
+    st.markdown(
+        dedent(
+            f"""
+            <section class="overall-goal-card">
+                <div class="overall-goal-top">
+                    <div>
+                        <span class="overall-goal-label">Meta geral diária</span>
+                        <strong class="overall-goal-value">{displayed_percentage}%</strong>
+                    </div>
+                    <span class="overall-goal-badge">Meta fixa · {format_integer_pt(goal)}</span>
+                </div>
+                <div
+                    class="overall-goal-track"
+                    role="progressbar"
+                    aria-label="Cumprimento da meta geral diária"
+                    aria-valuenow="{min(100, round(percentage))}"
+                    aria-valuemin="0"
+                    aria-valuemax="100"
+                >
+                    <div
+                        class="overall-goal-fill"
+                        style="width: {fill_width:.2f}%"
+                    ></div>
+                </div>
+                <div class="overall-goal-detail">
+                    <span>
+                        <strong>{format_integer_pt(actual)}</strong> realizados
+                        de <strong>{format_integer_pt(goal)}</strong>
+                    </span>
+                    <span>{progress_note}</span>
+                </div>
+            </section>
+            """
+        ).strip(),
+        unsafe_allow_html=True,
+    )
+
+    return {
+        "goal": goal,
+        "actual": actual,
+        "percentage": round(percentage, 2),
+        "remaining": max(0, goal - actual),
+    }
 
 
 def render_section_title(
@@ -2204,7 +2362,7 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                     </div>
                 </div>
                 <div class="unit-card-stats">
-                    <div class="unit-card-stat"><span>Atendimentos abertos</span><strong>{summary['open_count']}</strong></div>
+                    <div class="unit-card-stat"><span>Em aberto</span><strong>{summary['open_count']}</strong></div>
                     <div class="unit-card-stat"><span>Fila de espera</span><strong>{summary['waiting_count']}</strong></div>
                     <div class="unit-card-stat logged"><span>Logados Logos · {source_label}</span><strong>{logged_logos_text}</strong></div>
                     <div class="unit-card-stat"><span>Com produtividade</span><strong>{summary['unique_agents']}</strong></div>
@@ -3309,6 +3467,13 @@ with overview_tab:
             ),
             accent=True,
         )
+
+    diagnostic_result["overall_productivity_goal"] = (
+        render_overall_goal_card(
+            safe_int(total_productivity_all),
+            GENERAL_DAILY_PRODUCTIVITY_GOAL,
+        )
+    )
 
     if headcount_result["loaded_units"]:
         headcount_sources = ", ".join(
