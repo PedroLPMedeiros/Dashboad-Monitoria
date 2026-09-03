@@ -127,9 +127,7 @@ UNITS: tuple[UnitConfig, ...] = (
     UnitConfig(
         code="ELEKTRO",
         label="Elektro",
-        base_url=(
-            "https://neoenergiabrasiliaelektro.mutant360.com.br"
-        ),
+        base_url="https://neoenergia.mutant360.com.br",
         campaign_ids=(
             "34d5afbb-4aae-4d23-9db4-01fa03e5aa8b",
             "77b922f9-9fe6-4590-83ae-8bea969e1251",
@@ -353,6 +351,9 @@ class MutantClient:
             data,
             _decode_jwt_payload(token),
         )
+        # O identificador validado pertence ao token anterior. Após uma nova
+        # autenticação ele deve ser conferido novamente pela API.
+        self._supervisor_agent_id = None
 
     def _decode_response(
         self,
@@ -522,18 +523,20 @@ class MutantClient:
         validado na primeira página antes de ser reutilizado.
         """
 
-        candidates = list(self._agent_id_candidates)
-        if self._supervisor_agent_id:
-            candidates = [
-                self._supervisor_agent_id,
-                *(
-                    candidate
-                    for candidate in candidates
-                    if candidate != self._supervisor_agent_id
-                ),
-            ]
+        def ordered_candidates() -> list[str]:
+            candidates = list(self._agent_id_candidates)
+            if self._supervisor_agent_id:
+                candidates = [
+                    self._supervisor_agent_id,
+                    *(
+                        candidate
+                        for candidate in candidates
+                        if candidate != self._supervisor_agent_id
+                    ),
+                ]
+            return candidates
 
-        if not candidates:
+        if not ordered_candidates():
             raise MutantApiError(
                 "A autenticação não informou o identificador necessário "
                 "para consultar as pausas."
@@ -589,13 +592,29 @@ class MutantClient:
         selected_id: str | None = None
         candidate_errors: list[str] = []
 
-        for candidate in candidates:
-            body, error = request_page(candidate, 0)
-            if body is not None:
-                first_body = body
-                selected_id = candidate
+        # Tokens de acesso da Mutant podem expirar enquanto o fragmento de
+        # pausas permanece aberto. Se todos os identificadores retornarem 401,
+        # renova o token e repete a tentativa somente uma vez.
+        for authentication_attempt in range(2):
+            candidate_errors = []
+            for candidate in ordered_candidates():
+                body, error = request_page(candidate, 0)
+                if body is not None:
+                    first_body = body
+                    selected_id = candidate
+                    break
+                candidate_errors.append(error or "falha não identificada")
+
+            if first_body is not None:
                 break
-            candidate_errors.append(error or "falha não identificada")
+
+            only_unauthorized = bool(candidate_errors) and all(
+                error == "HTTP 401" for error in candidate_errors
+            )
+            if authentication_attempt == 0 and only_unauthorized:
+                self.authenticate()
+                continue
+            break
 
         if first_body is None or selected_id is None:
             error_summary = ", ".join(dict.fromkeys(candidate_errors))

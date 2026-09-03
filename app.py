@@ -2531,10 +2531,20 @@ def render_pause_monitor(runtime_units: list[dict[str, Any]]) -> None:
             )
 
     if not rows:
-        st.info(
-            "Nenhum colaborador do novo quadro Logos está em pausa neste "
-            "momento."
+        all_units_failed = bool(runtime_units) and len(errors) >= len(
+            runtime_units
         )
+        if all_units_failed:
+            st.error(
+                "Não foi possível consultar as pausas na Mutant. Os valores "
+                "zerados da conferência indicam ausência de resposta da API, "
+                "e não ausência de colaboradores em pausa."
+            )
+        else:
+            st.info(
+                "Nenhum colaborador do novo quadro Logos está em pausa neste "
+                "momento."
+            )
         with st.expander("Conferência da consulta de pausas"):
             st.json(audit)
         return
@@ -2555,10 +2565,9 @@ def render_pause_monitor(runtime_units: list[dict[str, Any]]) -> None:
         ]
 
     st.markdown(
-        '<div style="height: 28px;"></div>',
+        '<div style="height: 32px;"></div>',
         unsafe_allow_html=True,
     )
-    
     filter_columns = st.columns([1, 1.5, 1.2, 1.3])
 
     with filter_columns[0]:
@@ -3828,7 +3837,7 @@ with st.sidebar:
 
     with st.form("monitoring_filters", clear_on_submit=False):
         st.markdown("### Acesso principal")
-        st.caption("Brasília, Cosern, Coelba e Pernambuco")
+        st.caption("Brasília, Cosern, Elektro, Coelba e Pernambuco")
         main_username = st.text_input(
             "Usuário principal",
             placeholder="Informe o usuário principal",
@@ -3837,19 +3846,6 @@ with st.sidebar:
             "Senha principal",
             type="password",
             placeholder="Informe a senha principal",
-        )
-
-        st.divider()
-        st.markdown("### Acesso Elektro")
-        st.caption("Credencial utilizada exclusivamente para Elektro")
-        elektro_username = st.text_input(
-            "Usuário Elektro",
-            placeholder="Informe o usuário da Elektro",
-        )
-        elektro_password = st.text_input(
-            "Senha Elektro",
-            type="password",
-            placeholder="Informe a senha da Elektro",
         )
 
         st.divider()
@@ -3915,18 +3911,13 @@ if not monitoring_active:
 # Validação dos filtros
 # ---------------------------------------------------------------------------
 
-requires_main_credentials = any(code != "ELEKTRO" for code in selected_codes)
-requires_elektro_credentials = "ELEKTRO" in selected_codes
 main_credentials_ready = bool(main_username.strip()) and bool(main_password)
-elektro_credentials_ready = bool(elektro_username.strip()) and bool(elektro_password)
 
 validation_errors: list[str] = []
 if not selected_codes:
     validation_errors.append("Selecione pelo menos uma distribuidora.")
-if requires_main_credentials and not main_credentials_ready:
+if selected_codes and not main_credentials_ready:
     validation_errors.append("Informe o usuário e a senha principais.")
-if requires_elektro_credentials and not elektro_credentials_ready:
-    validation_errors.append("Informe o usuário e a senha da Elektro.")
 
 if validation_errors:
     for message in validation_errors:
@@ -3967,14 +3958,9 @@ for index, unit in enumerate(selected_units, start=1):
     tme_ticket_counts: dict[str, int] = {}
     tme_warnings: list[str] = []
 
-    if unit.code == "ELEKTRO":
-        unit_username = elektro_username.strip()
-        unit_password = elektro_password
-        credential_label = "credencial Elektro"
-    else:
-        unit_username = main_username.strip()
-        unit_password = main_password
-        credential_label = "credencial principal"
+    unit_username = main_username.strip()
+    unit_password = main_password
+    credential_label = "credencial principal"
 
     client_key = (unit.base_url, unit_username)
     authentication_ok = False
@@ -4024,10 +4010,53 @@ for index, unit in enumerate(selected_units, start=1):
                     f"campanha {campaign_index}: {exc}"
                 )
 
-        try:
-            ticket_stats = client.ticket_stats(unit.campaign_ids)
-        except MutantApiError as exc:
-            errors["ticket_stats"] = str(exc)
+        if unit.code == "ELEKTRO":
+            # No ambiente compartilhado, a Mutant aceita as campanhas da
+            # Elektro separadamente, mas rejeita as duas no mesmo payload.
+            queue_names = ("Principal", "Ligação Nova e Troca")
+            ticket_stats_parts: list[dict[str, Any]] = []
+            ticket_stats_errors: list[str] = []
+
+            for campaign_index, campaign_id in enumerate(unit.campaign_ids):
+                queue_name = (
+                    queue_names[campaign_index]
+                    if campaign_index < len(queue_names)
+                    else f"Campanha {campaign_index + 1}"
+                )
+                try:
+                    ticket_stats_parts.append(
+                        client.ticket_stats((campaign_id,))
+                    )
+                except MutantApiError as exc:
+                    ticket_stats_errors.append(f"{queue_name}: {exc}")
+
+            if ticket_stats_parts:
+                ticket_stats = {
+                    field: sum(
+                        safe_int(part.get(field))
+                        for part in ticket_stats_parts
+                    )
+                    for field in (
+                        "open",
+                        "waiting",
+                        "closed",
+                        "pending_from_previous_day",
+                    )
+                }
+
+            if ticket_stats_errors:
+                error_message = " | ".join(ticket_stats_errors)
+                if ticket_stats_parts:
+                    errors["ticket_stats_partial"] = (
+                        "Volumetria parcial da Elektro. " + error_message
+                    )
+                else:
+                    errors["ticket_stats"] = error_message
+        else:
+            try:
+                ticket_stats = client.ticket_stats(unit.campaign_ids)
+            except MutantApiError as exc:
+                errors["ticket_stats"] = str(exc)
 
         try:
             human_time = client.human_service_time(
