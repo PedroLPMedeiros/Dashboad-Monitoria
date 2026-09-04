@@ -13,7 +13,7 @@ import hashlib
 import json
 import re
 import unicodedata
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from io import BytesIO
 from textwrap import dedent
 from typing import Any
@@ -26,6 +26,9 @@ from mutant_api import (
     MutantApiError,
     MutantClient,
     UNITS,
+    build_hourly_queue_flow,
+    calculate_agent_tma,
+    count_previous_day_closed,
     format_seconds,
     parse_api_datetime,
     queue_label,
@@ -72,8 +75,10 @@ GENERAL_DAILY_PRODUCTIVITY_GOAL = (
     sum(UNIT_PLANNED_HEADCOUNT.values()) * DAILY_PRODUCTIVITY_PER_HC
 )
 
-# Intervalo da consulta automática do monitoramento de pausas.
-PAUSE_AUTO_REFRESH_SECONDS = 5 * 60
+# Intervalo único de atualização automática de todas as informações.
+DASHBOARD_AUTO_REFRESH_SECONDS = 10 * 60
+AUTO_REFRESH_TOLERANCE_SECONDS = 5
+PAUSE_AUTO_REFRESH_SECONDS = DASHBOARD_AUTO_REFRESH_SECONDS
 
 TME_DISTRIBUTORS = ("BSB", "Coelba", "Pernambuco", "Elektro", "Cosern")
 TME_DISTRIBUTOR_BY_CODE = {
@@ -1573,6 +1578,20 @@ def inject_styles() -> None:
             font-weight: 800;
         }
 
+        .unit-card-stat.carryover {
+            grid-column: 1 / -1;
+            margin: -.05rem -.2rem;
+            padding: .35rem .4rem;
+            border-radius: 5px;
+            background: #fff7ed;
+        }
+
+        .unit-card-stat.carryover span,
+        .unit-card-stat.carryover strong {
+            color: #c2410c;
+            font-weight: 800;
+        }
+
         .unit-card-queues {
             display: grid;
             gap: .42rem;
@@ -2091,7 +2110,7 @@ def render_overall_goal_card(actual: int, goal: int) -> dict[str, Any]:
                 </div>
                 <div class="overall-goal-detail">
                     <span>
-                        <strong>{format_integer_pt(actual)}</strong> realizados
+                        <strong>{format_integer_pt(actual)}</strong> válidos hoje
                         de <strong>{format_integer_pt(goal)}</strong>
                     </span>
                     <span>{progress_note}</span>
@@ -2464,7 +2483,7 @@ def render_pause_monitor(runtime_units: list[dict[str, Any]]) -> None:
     else:
         subtitle = (
             "Colaboradores da EPS Logos · atualização automática a cada "
-            "5 minutos ou imediata pelo botão"
+            "10 minutos ou imediata pelo botão"
         )
 
     with title_slot.container():
@@ -2563,11 +2582,6 @@ def render_pause_monitor(runtime_units: list[dict[str, Any]]) -> None:
             for value in st.session_state["pause_type_filter"]
             if value in pause_type_options
         ]
-
-    st.markdown(
-        '<div style="height: 32px;"></div>',
-        unsafe_allow_html=True,
-    )
     filter_columns = st.columns([1, 1.5, 1.2, 1.3])
 
     with filter_columns[0]:
@@ -3149,6 +3163,8 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
     for item in runtime_units:
         unit = item["unit"]
         summary = item["summary"]
+        planned_hc = UNIT_PLANNED_HEADCOUNT.get(unit.code)
+        planned_hc_text = "—" if planned_hc is None else str(planned_hc)
         errors = item["errors"]
         short_name = UNIT_SHORT_NAMES.get(unit.code, unit.label)
         unit_icon = UNIT_ICONS.get(unit.code, "◇")
@@ -3190,7 +3206,7 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                 </div>
                 <div class="unit-card-total">
                     <div>
-                        <span>Atendimentos realizados</span>
+                        <span>Produtividade válida hoje</span>
                         <strong>{summary['total_productivity']}</strong>
                     </div>
                     <div class="unit-card-tma">
@@ -3205,9 +3221,9 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                 <div class="unit-card-stats">
                     <div class="unit-card-stat"><span>Atendimentos abertos</span><strong>{summary['open_count']}</strong></div>
                     <div class="unit-card-stat"><span>Fila de espera</span><strong>{summary['waiting_count']}</strong></div>
-                    <div class="unit-card-stat logged"><span>Logados Atuais · {source_label}</span><strong>{logged_logos_text}</strong></div>
+                    <div class="unit-card-stat logged"><span>Logados Atuais · {source_label}</span><strong>{logged_logos_text} / {planned_hc_text}</strong></div>
                     <div class="unit-card-stat"><span>Logaram hoje · {source_label}</span><strong>{logged_today_logos_text}</strong></div>
-                    <div class="unit-card-stat"><span>Dia anterior</span><strong>{summary['previous_day']}</strong></div>
+                    <div class="unit-card-stat carryover"><span>Iniciados ontem e finalizados hoje</span><strong>{summary['previous_day_closed']}</strong></div>
                 </div>
             </article>
             """
@@ -3235,7 +3251,7 @@ def hourly_productivity_counts(
     records: list[dict[str, Any]],
     reference_date: date,
 ) -> dict[int, int]:
-    """Conta encerramentos válidos por hora local, sem alterar os filtros atuais."""
+    """Conta por hora tickets humanos iniciados e encerrados no mesmo dia."""
 
     counts = {hour: 0 for hour in range(24)}
     processed_tickets: set[str] = set()
@@ -3248,6 +3264,12 @@ def hourly_productivity_counts(
         ).strip()
 
         if not username or username.isdigit() or "external" in username.lower():
+            continue
+
+        created_at = parse_api_datetime(record.get("created_at"))
+        if not created_at:
+            continue
+        if created_at.astimezone(BRASILIA_TZ).date() != reference_date:
             continue
 
         closed_at = parse_api_datetime(record.get("closed_at"))
@@ -3316,6 +3338,392 @@ def hourly_productivity_dataframe(
         )
 
     return pd.DataFrame(rows)
+
+
+def hourly_flow_dataframe(
+    item: dict[str, Any],
+    queue_name: str,
+    reference_date: date,
+) -> pd.DataFrame:
+    """Prepara a série horária de uma distribuidora e fila para exibição."""
+
+    raw_rows = list((item.get("hourly_queue_flow") or {}).get(queue_name) or [])
+    if not raw_rows:
+        return pd.DataFrame()
+
+    active_hours = [
+        int(row["hour"])
+        for row in raw_rows
+        if safe_int(row.get("entries")) or safe_int(row.get("exits"))
+        or any(
+            row.get(field) is not None
+            for field in (
+                "tma_seconds",
+                "tme_seconds",
+                "tamax_seconds",
+                "temax_seconds",
+            )
+        )
+    ]
+    first_hour = min([8, *active_hours])
+    now_local = datetime.now(BRASILIA_TZ)
+    default_last_hour = 19
+    if reference_date == now_local.date():
+        default_last_hour = max(8, min(19, now_local.hour))
+    last_hour = max([default_last_hour, *active_hours])
+
+    visible_rows: list[dict[str, Any]] = []
+    for row in raw_rows:
+        hour = int(row["hour"])
+        if hour < first_hour or hour > last_hour:
+            continue
+        visible_rows.append(
+            {
+                "Hora": f"{hour:02d}h",
+                "Período": f"{hour:02d}:00 às {hour:02d}:59",
+                "Entrada": safe_int(row.get("entries")),
+                "Saída": safe_int(row.get("exits")),
+                "Demanda Acumulada": safe_int(row.get("accumulated_demand")),
+                "Resíduo": safe_int(row.get("residue")),
+                "TMA (s)": row.get("tma_seconds"),
+                "TME (s)": row.get("tme_seconds"),
+                "TAMAX (s)": row.get("tamax_seconds"),
+                "TEMAX (s)": row.get("temax_seconds"),
+            }
+        )
+    return pd.DataFrame(visible_rows)
+
+
+def flow_time_text(value: Any) -> str:
+    """Formata um tempo opcional sem transformar ausência de dado em zero."""
+
+    if value is None or pd.isna(value):
+        return "—"
+    return format_seconds(value)
+
+
+def render_hourly_queue_flow(
+    runtime_units: list[dict[str, Any]],
+    reference_date: date,
+) -> None:
+    """Exibe tabela e gráficos horários de volume e tempos por fila."""
+
+    render_section_title(
+        "Fluxo por hora",
+        "Entrada, saída, demanda, resíduo e tempos por distribuidora e fila",
+        healthy=not any(
+            item["errors"].get("analytic_report") for item in runtime_units
+        ),
+    )
+    st.caption(
+        "Demanda acumulada = entrada da hora + resíduo anterior. "
+        "Resíduo = máximo entre zero e demanda acumulada menos saída."
+    )
+
+    filter_columns = st.columns([1.15, 1.25, 2.6])
+    unit_codes = [item["unit"].code for item in runtime_units]
+    with filter_columns[0]:
+        selected_unit_code = st.selectbox(
+            "Distribuidora",
+            options=unit_codes,
+            format_func=lambda code: UNIT_SHORT_NAMES.get(code, code),
+            key="hourly_flow_unit",
+        )
+    selected_item = next(
+        item for item in runtime_units if item["unit"].code == selected_unit_code
+    )
+    queue_options = list((selected_item.get("hourly_queue_flow") or {}).keys())
+    with filter_columns[1]:
+        selected_queue = st.selectbox(
+            "Fila",
+            options=queue_options or ["Principal", "Ligação Nova e Troca"],
+            key="hourly_flow_queue",
+        )
+    with filter_columns[2]:
+        st.info(
+            "08h representa o período de 08:00 a 08:59. Os tempos são "
+            "calculados sobre os atendimentos encerrados em cada hora."
+        )
+
+    dataframe = hourly_flow_dataframe(
+        selected_item,
+        selected_queue,
+        reference_date,
+    )
+    audit = selected_item.get("hourly_queue_flow_audit") or {}
+
+    if dataframe.empty:
+        st.info(
+            "O relatório analítico não trouxe registros horários para esta "
+            "distribuidora e fila."
+        )
+        return
+
+    total_entries = int(dataframe["Entrada"].sum())
+    total_exits = int(dataframe["Saída"].sum())
+    current_residue = int(dataframe["Resíduo"].iloc[-1])
+    peak_demand = int(dataframe["Demanda Acumulada"].max())
+    metric_columns = st.columns(4)
+    with metric_columns[0]:
+        render_metric_card(
+            "Entradas no período",
+            total_entries,
+            "↘",
+            f"{UNIT_SHORT_NAMES.get(selected_unit_code, selected_unit_code)} · {selected_queue}",
+            accent=True,
+        )
+    with metric_columns[1]:
+        render_metric_card(
+            "Saídas no período",
+            total_exits,
+            "↗",
+            "Atendimentos encerrados",
+        )
+    with metric_columns[2]:
+        render_metric_card(
+            "Resíduo atual",
+            current_residue,
+            "≋",
+            "Saldo acumulado sem valores negativos",
+        )
+    with metric_columns[3]:
+        render_metric_card(
+            "Pico de demanda",
+            peak_demand,
+            "▲",
+            "Maior demanda disponível antes das saídas",
+        )
+
+    st.markdown("### Volume por hora")
+    volume_rows: list[dict[str, Any]] = []
+    for _, row in dataframe.iterrows():
+        for series in ("Entrada", "Saída", "Demanda Acumulada", "Resíduo"):
+            volume_rows.append(
+                {
+                    "Hora": row["Hora"],
+                    "Período": row["Período"],
+                    "Indicador": series,
+                    "Quantidade": int(row[series]),
+                }
+            )
+    volume_dataframe = pd.DataFrame(volume_rows)
+    volume_spec = {
+        "autosize": {"type": "fit", "contains": "padding", "resize": True},
+        "height": 310,
+        "layer": [
+            {
+                "transform": [
+                    {"filter": "datum.Indicador == 'Entrada' || datum.Indicador == 'Saída'"}
+                ],
+                "mark": {"type": "bar", "cornerRadiusTopLeft": 3, "cornerRadiusTopRight": 3},
+                "encoding": {
+                    "x": {
+                        "field": "Hora",
+                        "type": "ordinal",
+                        "sort": dataframe["Hora"].tolist(),
+                        "title": "Hora de início do intervalo",
+                        "axis": {"labelAngle": 0, "grid": False},
+                    },
+                    "xOffset": {"field": "Indicador"},
+                    "y": {
+                        "field": "Quantidade",
+                        "type": "quantitative",
+                        "title": "Clientes",
+                        "scale": {"zero": True, "nice": True},
+                    },
+                    "color": {
+                        "field": "Indicador",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["Entrada", "Saída"],
+                            "range": ["#7c3aed", "#0f9f8f"],
+                        },
+                    },
+                    "tooltip": [
+                        {"field": "Período", "type": "nominal", "title": "Período"},
+                        {"field": "Indicador", "type": "nominal", "title": "Indicador"},
+                        {"field": "Quantidade", "type": "quantitative", "title": "Quantidade"},
+                    ],
+                },
+            },
+            {
+                "transform": [
+                    {"filter": "datum.Indicador == 'Demanda Acumulada' || datum.Indicador == 'Resíduo'"}
+                ],
+                "mark": {"type": "line", "point": {"filled": True, "size": 48}, "strokeWidth": 2.4},
+                "encoding": {
+                    "x": {
+                        "field": "Hora",
+                        "type": "ordinal",
+                        "sort": dataframe["Hora"].tolist(),
+                    },
+                    "y": {"field": "Quantidade", "type": "quantitative"},
+                    "color": {
+                        "field": "Indicador",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["Demanda Acumulada", "Resíduo"],
+                            "range": ["#f59e0b", "#dc2648"],
+                        },
+                    },
+                    "strokeDash": {
+                        "field": "Indicador",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["Demanda Acumulada", "Resíduo"],
+                            "range": [[1, 0], [7, 4]],
+                        },
+                    },
+                    "tooltip": [
+                        {"field": "Período", "type": "nominal", "title": "Período"},
+                        {"field": "Indicador", "type": "nominal", "title": "Indicador"},
+                        {"field": "Quantidade", "type": "quantitative", "title": "Quantidade"},
+                    ],
+                },
+            },
+        ],
+        "resolve": {"scale": {"color": "independent", "strokeDash": "independent"}},
+        "config": {
+            "view": {"stroke": None},
+            "axis": {
+                "domainColor": "#dbe2ea",
+                "gridColor": "#edf1f5",
+                "labelColor": "#64748b",
+                "titleColor": "#64748b",
+            },
+            "legend": {"orient": "top", "title": None},
+        },
+    }
+    st.vega_lite_chart(volume_dataframe, volume_spec, use_container_width=True)
+
+    st.markdown("### Tempos por hora")
+    time_labels = {
+        "TMA (s)": "TMA",
+        "TME (s)": "TME",
+        "TAMAX (s)": "TAMAX",
+        "TEMAX (s)": "TEMAX",
+    }
+    time_rows: list[dict[str, Any]] = []
+    for _, row in dataframe.iterrows():
+        for source_column, indicator in time_labels.items():
+            seconds = row[source_column]
+            if seconds is None or pd.isna(seconds):
+                continue
+            time_rows.append(
+                {
+                    "Hora": row["Hora"],
+                    "Período": row["Período"],
+                    "Indicador": indicator,
+                    "Minutos": float(seconds) / 60,
+                    "Tempo": format_seconds(seconds),
+                }
+            )
+
+    if time_rows:
+        time_dataframe = pd.DataFrame(time_rows)
+        time_spec = {
+            "autosize": {"type": "fit", "contains": "padding", "resize": True},
+            "height": 285,
+            "mark": {"type": "line", "point": {"filled": True, "size": 50}, "strokeWidth": 2.4},
+            "encoding": {
+                "x": {
+                    "field": "Hora",
+                    "type": "ordinal",
+                    "sort": dataframe["Hora"].tolist(),
+                    "title": "Hora de encerramento",
+                    "axis": {"labelAngle": 0, "grid": False},
+                },
+                "y": {
+                    "field": "Minutos",
+                    "type": "quantitative",
+                    "title": "Tempo (minutos)",
+                    "scale": {"zero": True, "nice": True},
+                },
+                "color": {
+                    "field": "Indicador",
+                    "type": "nominal",
+                    "scale": {
+                        "domain": ["TMA", "TME", "TAMAX", "TEMAX"],
+                        "range": ["#7c3aed", "#0f9f8f", "#f59e0b", "#dc2648"],
+                    },
+                    "legend": {"title": None, "orient": "top"},
+                },
+                "strokeDash": {
+                    "field": "Indicador",
+                    "type": "nominal",
+                    "scale": {
+                        "domain": ["TMA", "TME", "TAMAX", "TEMAX"],
+                        "range": [[1, 0], [1, 0], [7, 4], [7, 4]],
+                    },
+                    "legend": None,
+                },
+                "tooltip": [
+                    {"field": "Período", "type": "nominal", "title": "Período"},
+                    {"field": "Indicador", "type": "nominal", "title": "Indicador"},
+                    {"field": "Tempo", "type": "nominal", "title": "Tempo"},
+                ],
+            },
+            "config": {
+                "view": {"stroke": None},
+                "axis": {
+                    "domainColor": "#dbe2ea",
+                    "gridColor": "#edf1f5",
+                    "labelColor": "#64748b",
+                    "titleColor": "#64748b",
+                },
+            },
+        }
+        st.vega_lite_chart(time_dataframe, time_spec, use_container_width=True)
+    else:
+        st.warning(
+            "A API não retornou tempos individuais de espera ou atendimento "
+            "humano. Entrada, saída e resíduo continuam disponíveis."
+        )
+
+    st.markdown("### Tabela detalhada")
+    table_dataframe = dataframe.copy()
+    for column in time_labels:
+        table_dataframe[column.removesuffix(" (s)")] = table_dataframe[column].map(
+            flow_time_text
+        )
+    table_dataframe = table_dataframe[
+        [
+            "Hora",
+            "Entrada",
+            "Saída",
+            "Demanda Acumulada",
+            "Resíduo",
+            "TMA",
+            "TME",
+            "TAMAX",
+            "TEMAX",
+        ]
+    ]
+    st.dataframe(
+        table_dataframe,
+        use_container_width=True,
+        hide_index=True,
+        height=min(610, 38 + 35 * len(table_dataframe)),
+        column_config={
+            "Hora": st.column_config.TextColumn("Hora", width="small"),
+            "Entrada": st.column_config.NumberColumn("Entrada", format="%d"),
+            "Saída": st.column_config.NumberColumn("Saída", format="%d"),
+            "Demanda Acumulada": st.column_config.NumberColumn(
+                "Demanda acumulada", format="%d"
+            ),
+            "Resíduo": st.column_config.NumberColumn("Resíduo", format="%d"),
+        },
+    )
+
+    if not audit.get("available_entry_fields"):
+        st.warning(
+            "Não foi identificado um campo de início/criação no JSON da API. "
+            "As entradas podem aparecer zeradas até o nome do campo ser mapeado."
+        )
+    if not audit.get("available_human_duration_fields"):
+        st.caption("TMA/TAMAX: campo individual de atendimento ainda não identificado.")
+    if not audit.get("available_wait_duration_fields"):
+        st.caption("TME/TEMAX: campo individual de espera ainda não identificado.")
 
 
 def format_integer_pt(value: int) -> str:
@@ -3476,7 +3884,7 @@ def render_productivity_insights(
                         ></div>
                     </div>
                     <div class="productivity-goal-detail">
-                        <span>{format_integer_pt(actual)} realizados</span>
+                        <span>{format_integer_pt(actual)} válidos hoje</span>
                         <span>Meta {format_integer_pt(goal)}</span>
                     </div>
                 </article>
@@ -3736,13 +4144,38 @@ def build_tme_whatsapp_report(
     return "\n".join(lines)
 
 
-def productivity_dataframe(rows: list[dict[str, Any]]) -> pd.DataFrame:
+def productivity_dataframe(
+    rows: list[dict[str, Any]],
+    agent_tma_values: dict[str, float] | None = None,
+) -> pd.DataFrame:
     """Normaliza e ordena as colunas exibidas na produtividade."""
 
+    agent_tma_values = agent_tma_values or {}
     if not rows:
-        return pd.DataFrame(columns=["Login", "Nome", "Fila", "Encerrados"])
+        return pd.DataFrame(
+            columns=[
+                "Login",
+                "Nome",
+                "Fila",
+                "Encerrados",
+                "TMA atual (calculado)",
+            ]
+        )
     dataframe = pd.DataFrame(rows)
-    preferred = ["Login", "Nome", "Fila", "Encerrados"]
+    dataframe["TMA atual (calculado)"] = dataframe["Login"].map(
+        lambda login: (
+            format_seconds(agent_tma_values[str(login).strip().casefold()])
+            if str(login).strip().casefold() in agent_tma_values
+            else "—"
+        )
+    )
+    preferred = [
+        "Login",
+        "Nome",
+        "Fila",
+        "Encerrados",
+        "TMA atual (calculado)",
+    ]
     existing = [column for column in preferred if column in dataframe.columns]
     remaining = [column for column in dataframe.columns if column not in existing]
     return dataframe[existing + remaining]
@@ -3763,8 +4196,11 @@ def audit_analytic_filter(
         "sem_login": 0,
         "login_numerico": 0,
         "login_external": 0,
+        "sem_data_criacao_valida": 0,
         "sem_data_encerramento_valida": 0,
         "encerrado_em_outra_data": 0,
+        "iniciado_no_dia_anterior_finalizado_no_atual": 0,
+        "iniciado_em_outra_data": 0,
         "ticket_duplicado": 0,
         "considerados_na_produtividade": 0,
     }
@@ -3789,6 +4225,11 @@ def audit_analytic_filter(
             audit["login_external"] += 1
             continue
 
+        created_at = parse_api_datetime(record.get("created_at"))
+        if not created_at:
+            audit["sem_data_criacao_valida"] += 1
+            continue
+
         closed_at = parse_api_datetime(record.get("closed_at"))
         if not closed_at:
             audit["sem_data_encerramento_valida"] += 1
@@ -3811,7 +4252,13 @@ def audit_analytic_filter(
             continue
 
         processed_tickets.add(ticket_id)
-        audit["considerados_na_produtividade"] += 1
+        created_date = created_at.astimezone(BRASILIA_TZ).date()
+        if created_date == reference_date:
+            audit["considerados_na_produtividade"] += 1
+        elif created_date == reference_date - timedelta(days=1):
+            audit["iniciado_no_dia_anterior_finalizado_no_atual"] += 1
+        else:
+            audit["iniciado_em_outra_data"] += 1
 
     return audit
 
@@ -3880,6 +4327,7 @@ with st.sidebar:
         )
 
     st.caption("Credenciais e tokens permanecem somente nesta execução local.")
+    st.caption("Atualização automática de todos os dados: a cada 10 minutos.")
 
 
 monitoring_active = bool(
@@ -3928,6 +4376,37 @@ if run_diagnostic:
     st.session_state["monitoring_active"] = True
 
 
+# Agenda uma nova execução completa da aplicação. O fragmento desperta a cada
+# dez minutos e o ``st.rerun`` refaz autenticação, consultas e cálculos de todas
+# as abas sem recarregar manualmente a página no navegador.
+full_refresh_key = "dashboard_last_full_refresh_at"
+if run_diagnostic or not isinstance(
+    st.session_state.get(full_refresh_key),
+    (int, float),
+):
+    st.session_state[full_refresh_key] = datetime.now(BRASILIA_TZ).timestamp()
+
+
+def dashboard_auto_refresh_tick() -> None:
+    last_refresh = float(st.session_state.get(full_refresh_key, 0.0))
+    current_time = datetime.now(BRASILIA_TZ).timestamp()
+    if (
+        current_time - last_refresh
+        >= DASHBOARD_AUTO_REFRESH_SECONDS - AUTO_REFRESH_TOLERANCE_SECONDS
+    ):
+        # Atualiza o relógio antes do rerun para impedir um novo disparo
+        # imediato quando a aplicação completa começar novamente.
+        st.session_state[full_refresh_key] = current_time
+        st.rerun()
+
+
+if hasattr(st, "fragment"):
+    st.fragment(
+        dashboard_auto_refresh_tick,
+        run_every=DASHBOARD_AUTO_REFRESH_SECONDS,
+    )()
+
+
 # ---------------------------------------------------------------------------
 # Consultas — mesmas regras da versão funcional recebida
 # ---------------------------------------------------------------------------
@@ -3953,6 +4432,7 @@ for index, unit in enumerate(selected_units, start=1):
     human_time: dict[str, Any] = {}
     analytic_records: list[dict[str, Any]] = []
     productivity_rows: list[dict[str, Any]] = []
+    individual_productivity_rows: list[dict[str, Any]] = []
     campaign_wait_times: dict[str, dict[str, Any]] = {}
     tme_values: dict[str, str] = {}
     tme_ticket_counts: dict[str, int] = {}
@@ -4075,6 +4555,11 @@ for index, unit in enumerate(selected_units, start=1):
                 analytic_records,
                 reference_date,
             )
+            individual_productivity_rows = summarize_analytic(
+                analytic_records,
+                reference_date,
+                require_created_on_reference_date=False,
+            )
         except MutantApiError as exc:
             errors["analytic_report"] = str(exc)
 
@@ -4122,10 +4607,34 @@ for index, unit in enumerate(selected_units, start=1):
         for row in productivity_rows
         if row.get("Fila") == "Ligação Nova e Troca"
     )
+    individual_total_productivity = sum(
+        safe_int(row.get("Encerrados")) for row in individual_productivity_rows
+    )
+    individual_unique_agents = len(
+        {
+            str(row.get("Login"))
+            for row in individual_productivity_rows
+            if str(row.get("Login") or "").strip()
+        }
+    )
+    individual_principal_total = sum(
+        safe_int(row.get("Encerrados"))
+        for row in individual_productivity_rows
+        if row.get("Fila") == "Principal"
+    )
+    individual_special_total = sum(
+        safe_int(row.get("Encerrados"))
+        for row in individual_productivity_rows
+        if row.get("Fila") == "Ligação Nova e Troca"
+    )
     open_count = safe_int(ticket_stats.get("open"))
     waiting_count = safe_int(ticket_stats.get("waiting"))
     closed_stats = safe_int(ticket_stats.get("closed"))
     previous_day = safe_int(ticket_stats.get("pending_from_previous_day"))
+    previous_day_closed = count_previous_day_closed(
+        analytic_records,
+        reference_date,
+    )
     tah_seconds = human_time.get("tah")
     filter_audit = audit_analytic_filter(
         analytic_records,
@@ -4135,16 +4644,32 @@ for index, unit in enumerate(selected_units, start=1):
         analytic_records,
         reference_date,
     )
+    campaign_queue_map = {
+        campaign_id: (
+            "Principal" if campaign_index == 0 else "Ligação Nova e Troca"
+        )
+        for campaign_index, campaign_id in enumerate(unit.campaign_ids)
+    }
+    hourly_queue_flow, hourly_queue_flow_audit = build_hourly_queue_flow(
+        analytic_records,
+        reference_date,
+        campaign_queue_map,
+    )
 
     summary = {
         "total_productivity": total_productivity,
         "unique_agents": unique_agents,
         "principal_total": principal_total,
         "special_total": special_total,
+        "individual_total_productivity": individual_total_productivity,
+        "individual_unique_agents": individual_unique_agents,
+        "individual_principal_total": individual_principal_total,
+        "individual_special_total": individual_special_total,
         "open_count": open_count,
         "waiting_count": waiting_count,
         "closed_stats": closed_stats,
         "previous_day": previous_day,
+        "previous_day_closed": previous_day_closed,
         "tah_seconds": tah_seconds,
         "logged_logos": None,
         "logged_today_logos": None,
@@ -4161,7 +4686,10 @@ for index, unit in enumerate(selected_units, start=1):
         "human_time": human_time,
         "analytic_records": analytic_records,
         "productivity_rows": productivity_rows,
+        "individual_productivity_rows": individual_productivity_rows,
         "hourly_productivity": hourly_productivity,
+        "hourly_queue_flow": hourly_queue_flow,
+        "hourly_queue_flow_audit": hourly_queue_flow_audit,
         "filter_audit": filter_audit,
         "campaign_wait_times": campaign_wait_times,
         "tme_values": tme_values,
@@ -4185,7 +4713,11 @@ for index, unit in enumerate(selected_units, start=1):
         "tme_warnings": tme_warnings,
         "analytic_record_count": len(analytic_records),
         "productivity": productivity_rows,
+        "individual_productivity": individual_productivity_rows,
+        "previous_day_closed_today": previous_day_closed,
         "hourly_productivity": hourly_productivity,
+        "hourly_queue_flow": hourly_queue_flow,
+        "hourly_queue_flow_audit": hourly_queue_flow_audit,
         "productivity_filter_audit": filter_audit,
         "logged_logos": None,
         "errors": errors,
@@ -4249,10 +4781,18 @@ for item in runtime_units:
 # Navegação principal
 # ---------------------------------------------------------------------------
 
-overview_tab, productivity_tab, pause_tab, tme_tab, technical_tab = st.tabs(
+(
+    overview_tab,
+    productivity_tab,
+    hourly_flow_tab,
+    pause_tab,
+    tme_tab,
+    technical_tab,
+) = st.tabs(
     [
         "Visão Geral",
         "Produtividade por Atendente",
+        "Fluxo por Hora",
         "Monitoramento de Pausas",
         "Relatório de TME",
         "Diagnóstico Técnico",
@@ -4292,7 +4832,7 @@ with overview_tab:
             "Produtividade total",
             total_productivity_all,
             "✓",
-            "Atendimentos encerrados no dia",
+            "Iniciados e encerrados no dia",
             accent=True,
         )
     with overview_columns[1]:
@@ -4382,23 +4922,32 @@ with overview_tab:
 with productivity_tab:
     render_section_title(
         "Produtividade individual",
-        "Atendimentos encerrados agrupados por login e fila",
+        "Atendimentos encerrados no dia, independentemente da data de início",
         healthy=not any(item["errors"].get("analytic_report") for item in runtime_units),
+    )
+
+    agent_tma_values = calculate_agent_tma(
+        [
+            record
+            for item in runtime_units
+            for record in item["analytic_records"]
+        ],
+        reference_date,
     )
 
     for item in runtime_units:
         unit = item["unit"]
-        rows = item["productivity_rows"]
+        rows = item["individual_productivity_rows"]
         summary = item["summary"]
 
         st.markdown(f"### {UNIT_ICONS.get(unit.code, '📍')} {unit.label}")
         st.markdown(
             f"""
             <div class="queue-chip-row">
-                <span class="queue-chip">Total: {summary['total_productivity']}</span>
-                <span class="queue-chip">Principal: {summary['principal_total']}</span>
-                <span class="queue-chip">Ligação Nova e Troca: {summary['special_total']}</span>
-                <span class="queue-chip">Com produtividade: {summary['unique_agents']}</span>
+                <span class="queue-chip">Total: {summary['individual_total_productivity']}</span>
+                <span class="queue-chip">Principal: {summary['individual_principal_total']}</span>
+                <span class="queue-chip">Ligação Nova e Troca: {summary['individual_special_total']}</span>
+                <span class="queue-chip">Com produtividade: {summary['individual_unique_agents']}</span>
                 <span class="queue-chip">Logados Logos: {summary['logged_logos'] if summary['logged_logos'] is not None else '—'}</span>
             </div>
             """,
@@ -4406,7 +4955,7 @@ with productivity_tab:
         )
 
         if rows:
-            dataframe = productivity_dataframe(rows)
+            dataframe = productivity_dataframe(rows, agent_tma_values)
             st.dataframe(
                 dataframe,
                 use_container_width=True,
@@ -4421,15 +4970,29 @@ with productivity_tab:
                         format="%d",
                         width="small",
                     ),
+                    "TMA atual (calculado)": st.column_config.TextColumn(
+                        "TMA atual (calculado)",
+                        width="medium",
+                        help=(
+                            "Média de total_agent_time dos atendimentos encerrados "
+                            "no dia pelo colaborador, independentemente do início, "
+                            "considerando todas as filas e distribuidoras "
+                            "selecionadas."
+                        ),
+                    ),
                 },
             )
         else:
             st.info(
-                "Nenhum atendimento encerrado foi encontrado no relatório "
-                "analítico para a data selecionada."
+                "Nenhum atendimento humano encerrado no dia foi encontrado "
+                "no relatório analítico."
             )
 
         st.divider()
+
+
+with hourly_flow_tab:
+    render_hourly_queue_flow(runtime_units, reference_date)
 
 
 with pause_tab:
@@ -4437,10 +5000,7 @@ with pause_tab:
         render_pause_monitor(runtime_units)
 
     if hasattr(st, "fragment"):
-        st.fragment(
-            pause_monitor_fragment_body,
-            run_every=PAUSE_AUTO_REFRESH_SECONDS,
-        )()
+        st.fragment(pause_monitor_fragment_body)()
     else:
         pause_monitor_fragment_body()
 
@@ -4761,6 +5321,11 @@ with technical_tab:
                     "Classificação": "Exclusão",
                 },
                 {
+                    "Etapa": "Excluídos — sem data de criação válida",
+                    "Quantidade": audit["sem_data_criacao_valida"],
+                    "Classificação": "Exclusão",
+                },
+                {
                     "Etapa": "Excluídos — sem encerramento válido",
                     "Quantidade": audit["sem_data_encerramento_valida"],
                     "Classificação": "Exclusão",
@@ -4776,7 +5341,19 @@ with technical_tab:
                     "Classificação": "Exclusão",
                 },
                 {
-                    "Etapa": "Considerados na produtividade humana",
+                    "Etapa": "Finalizados hoje — iniciados no dia anterior",
+                    "Quantidade": audit[
+                        "iniciado_no_dia_anterior_finalizado_no_atual"
+                    ],
+                    "Classificação": "Contagem separada",
+                },
+                {
+                    "Etapa": "Excluídos — iniciados em outra data",
+                    "Quantidade": audit["iniciado_em_outra_data"],
+                    "Classificação": "Exclusão",
+                },
+                {
+                    "Etapa": "Produtividade válida — iniciou e encerrou hoje",
                     "Quantidade": audit["considerados_na_produtividade"],
                     "Classificação": "Resultado",
                 },
@@ -4825,6 +5402,14 @@ with technical_tab:
                 st.json(records[:3])
             else:
                 st.write("Nenhum registro analítico foi retornado.")
+
+        with st.expander("Conferência do fluxo por hora"):
+            flow_audit = item.get("hourly_queue_flow_audit") or {}
+            st.json(flow_audit)
+            st.caption(
+                "Entradas usam o horário de criação do ticket. Saídas, TMA, "
+                "TME, TAMAX e TEMAX usam o horário de encerramento."
+            )
 
         st.divider()
 

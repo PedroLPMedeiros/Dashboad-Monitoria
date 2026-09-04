@@ -5,8 +5,9 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from dataclasses import dataclass
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -243,6 +244,411 @@ def queue_label(
         return "Ligação Nova e Troca"
 
     return "Principal"
+
+
+ENTRY_DATETIME_FIELDS = (
+    "created_at",
+    "started_at",
+    "start_at",
+    "start_date",
+    "opened_at",
+    "ticket_created_at",
+    "inicio",
+)
+
+EXIT_DATETIME_FIELDS = (
+    "closed_at",
+    "ended_at",
+    "end_at",
+    "end_date",
+    "finished_at",
+    "ticket_closed_at",
+    "fim",
+)
+
+WAIT_DURATION_FIELDS = (
+    "contact_wait_time",
+    "waiting_time",
+    "wait_time",
+    "customer_wait_time",
+    "queue_wait_time",
+    "time_waiting",
+    "waiting_time_seconds",
+    "avg_wait_time_in_seconds",
+    "tempo_espera_cliente",
+)
+
+HUMAN_DURATION_FIELDS = (
+    "total_agent_time",
+    "human_service_time",
+    "human_service_time_seconds",
+    "service_time",
+    "attendance_time",
+    "handling_time",
+    "talk_time",
+    "conversation_time",
+    "tah",
+    "tempo_atendimento_humano",
+)
+
+
+def _first_record_value(record: dict[str, Any], fields: tuple[str, ...]) -> Any:
+    """Localiza o primeiro campo conhecido, inclusive em objetos aninhados."""
+
+    for field in fields:
+        value = record.get(field)
+        if value not in (None, ""):
+            return value
+
+    pending = [value for value in record.values() if isinstance(value, dict)]
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop(0)
+        identity = id(current)
+        if identity in visited:
+            continue
+        visited.add(identity)
+        for field in fields:
+            value = current.get(field)
+            if value not in (None, ""):
+                return value
+        pending.extend(value for value in current.values() if isinstance(value, dict))
+    return None
+
+
+def parse_duration_seconds(value: Any) -> float | None:
+    """Converte durações numéricas, HH:MM:SS ou ISO-8601 para segundos."""
+
+    if value in (None, ""):
+        return None
+    if isinstance(value, dict):
+        nested_value = _first_record_value(
+            value,
+            ("seconds", "total_seconds", "duration", "value"),
+        )
+        return parse_duration_seconds(nested_value)
+    if isinstance(value, (int, float)):
+        return max(0.0, float(value))
+
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return max(0.0, float(text.replace(",", ".")))
+    except ValueError:
+        pass
+
+    day_match = re.fullmatch(
+        r"(?:(\d+)\s+days?,\s*)?(\d{1,3}):([0-5]\d):([0-5]\d(?:[.,]\d+)?)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if day_match:
+        days = int(day_match.group(1) or 0)
+        hours = int(day_match.group(2))
+        minutes = int(day_match.group(3))
+        seconds = float(day_match.group(4).replace(",", "."))
+        return max(0.0, days * 86400 + hours * 3600 + minutes * 60 + seconds)
+
+    iso_match = re.fullmatch(
+        r"P(?:(\d+(?:\.\d+)?)D)?T"
+        r"(?:(\d+(?:\.\d+)?)H)?"
+        r"(?:(\d+(?:\.\d+)?)M)?"
+        r"(?:(\d+(?:\.\d+)?)S)?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if iso_match:
+        days, hours, minutes, seconds = (
+            float(part or 0) for part in iso_match.groups()
+        )
+        return max(0.0, days * 86400 + hours * 3600 + minutes * 60 + seconds)
+    return None
+
+
+def _analytic_ticket_id(record: dict[str, Any], position: int) -> str:
+    return str(
+        record.get("ticket_id")
+        or record.get("protocol")
+        or record.get("id")
+        or record.get("uuid")
+        or f"linha-{position}"
+    )
+
+
+def _analytic_queue(
+    record: dict[str, Any],
+    campaign_queue_map: dict[str, str],
+) -> str | None:
+    campaign = record.get("campaign")
+    campaign_id = str(
+        record.get("campaign_id")
+        or record.get("campaign__id")
+        or (campaign.get("id") if isinstance(campaign, dict) else "")
+        or ""
+    ).strip()
+    if campaign_id in campaign_queue_map:
+        return campaign_queue_map[campaign_id]
+
+    campaign_name = str(
+        record.get("campaign_name")
+        or record.get("campaign__name")
+        or (campaign.get("name") if isinstance(campaign, dict) else "")
+        or ""
+    ).strip()
+    return queue_label(campaign_name) if campaign_name else None
+
+
+def build_hourly_queue_flow(
+    records: list[dict[str, Any]],
+    reference_date: date,
+    campaign_queue_map: dict[str, str],
+) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
+    """Calcula entrada, saída, resíduo e tempos horários por fila.
+
+    Entradas usam o horário de criação/início do ticket. Saídas e tempos usam
+    o mesmo conjunto humano considerado na produtividade, agrupado pelo horário
+    de encerramento. O resíduo inicia zerado à meia-noite e nunca fica negativo.
+    """
+
+    queue_names = tuple(dict.fromkeys(campaign_queue_map.values()))
+    buckets: dict[str, dict[int, dict[str, Any]]] = {
+        queue_name: {
+            hour: {
+                "entries": 0,
+                "exits": 0,
+                "human_durations": [],
+                "human_durations_by_agent": {},
+                "wait_durations": [],
+            }
+            for hour in range(24)
+        }
+        for queue_name in queue_names
+    }
+    audit: dict[str, Any] = {
+        "records_received": len(records),
+        "records_without_queue": 0,
+        "entries_considered": 0,
+        "entries_without_valid_datetime": 0,
+        "exits_considered": 0,
+        "exits_without_human_duration": 0,
+        "exits_without_wait_duration": 0,
+    }
+    entry_tickets: set[str] = set()
+    exit_tickets: set[str] = set()
+
+    for position, record in enumerate(records):
+        queue_name = _analytic_queue(record, campaign_queue_map)
+        if queue_name not in buckets:
+            audit["records_without_queue"] += 1
+            continue
+
+        ticket_id = _analytic_ticket_id(record, position)
+        entry_at = parse_api_datetime(_first_record_value(record, ENTRY_DATETIME_FIELDS))
+        entry_local: datetime | None = None
+        if entry_at is None:
+            audit["entries_without_valid_datetime"] += 1
+        elif ticket_id not in entry_tickets:
+            entry_local = entry_at.astimezone(BRASILIA_TZ)
+            if entry_local.date() == reference_date:
+                buckets[queue_name][entry_local.hour]["entries"] += 1
+                audit["entries_considered"] += 1
+                entry_tickets.add(ticket_id)
+
+        username = str(
+            record.get("assigned_to_username")
+            or record.get("agent_username")
+            or ""
+        ).strip()
+        if not username or username.isdigit() or "external" in username.lower():
+            continue
+
+        if entry_local is None:
+            entry_local = entry_at.astimezone(BRASILIA_TZ) if entry_at else None
+        if entry_local is None or entry_local.date() != reference_date:
+            continue
+
+        exit_at = parse_api_datetime(_first_record_value(record, EXIT_DATETIME_FIELDS))
+        if exit_at is None or ticket_id in exit_tickets:
+            continue
+        exit_local = exit_at.astimezone(BRASILIA_TZ)
+        if exit_local.date() != reference_date:
+            continue
+
+        bucket = buckets[queue_name][exit_local.hour]
+        bucket["exits"] += 1
+        exit_tickets.add(ticket_id)
+        audit["exits_considered"] += 1
+
+        human_duration = parse_duration_seconds(
+            _first_record_value(record, HUMAN_DURATION_FIELDS)
+        )
+        if human_duration is None:
+            audit["exits_without_human_duration"] += 1
+        else:
+            bucket["human_durations"].append(human_duration)
+            bucket["human_durations_by_agent"].setdefault(
+                username,
+                [],
+            ).append(human_duration)
+
+        wait_duration = parse_duration_seconds(
+            _first_record_value(record, WAIT_DURATION_FIELDS)
+        )
+        if wait_duration is None:
+            audit["exits_without_wait_duration"] += 1
+        else:
+            bucket["wait_durations"].append(wait_duration)
+
+    result: dict[str, list[dict[str, Any]]] = {}
+    for queue_name, hourly_buckets in buckets.items():
+        previous_residue = 0
+        queue_rows: list[dict[str, Any]] = []
+        for hour in range(24):
+            bucket = hourly_buckets[hour]
+            entries = int(bucket["entries"])
+            exits = int(bucket["exits"])
+            accumulated_demand = previous_residue + entries
+            residue = max(0, accumulated_demand - exits)
+            human_values = list(bucket["human_durations"])
+            human_values_by_agent = dict(
+                bucket["human_durations_by_agent"]
+            )
+            wait_values = list(bucket["wait_durations"])
+            agent_tma_values = [
+                sum(agent_values) / len(agent_values)
+                for agent_values in human_values_by_agent.values()
+                if agent_values
+            ]
+            queue_rows.append(
+                {
+                    "hour": hour,
+                    "entries": entries,
+                    "exits": exits,
+                    "accumulated_demand": accumulated_demand,
+                    "residue": residue,
+                    "tma_seconds": (
+                        sum(human_values) / len(human_values)
+                        if human_values
+                        else None
+                    ),
+                    "tme_seconds": (
+                        sum(wait_values) / len(wait_values)
+                        if wait_values
+                        else None
+                    ),
+                    "tamax_seconds": (
+                        max(agent_tma_values)
+                        if agent_tma_values
+                        else None
+                    ),
+                    "temax_seconds": max(wait_values) if wait_values else None,
+                }
+            )
+            previous_residue = residue
+        result[queue_name] = queue_rows
+
+    audit["available_entry_fields"] = sorted(
+        field for field in ENTRY_DATETIME_FIELDS if any(field in record for record in records)
+    )
+    audit["available_human_duration_fields"] = sorted(
+        field for field in HUMAN_DURATION_FIELDS if any(field in record for record in records)
+    )
+    audit["available_wait_duration_fields"] = sorted(
+        field for field in WAIT_DURATION_FIELDS if any(field in record for record in records)
+    )
+    return result, audit
+
+
+def calculate_agent_tma(
+    records: list[dict[str, Any]],
+    reference_date: date,
+) -> dict[str, float]:
+    """Calcula o TMA diário de cada colaborador pelos tickets humanos.
+
+    O resultado é consolidado por login e pode receber registros de várias
+    distribuidoras e filas. Tickets repetidos, bots e atendimentos que não
+    terminaram na data selecionada são desconsiderados. A data de início não
+    restringe o TMA individual.
+    """
+
+    totals: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    processed_tickets: set[str] = set()
+
+    for position, record in enumerate(records):
+        username = str(
+            record.get("assigned_to_username")
+            or record.get("agent_username")
+            or ""
+        ).strip()
+        if not username or username.isdigit() or "external" in username.lower():
+            continue
+
+        closed_at = parse_api_datetime(
+            _first_record_value(record, EXIT_DATETIME_FIELDS)
+        )
+        if closed_at is None:
+            continue
+        if closed_at.astimezone(BRASILIA_TZ).date() != reference_date:
+            continue
+
+        ticket_id = _analytic_ticket_id(record, position)
+        if ticket_id in processed_tickets:
+            continue
+
+        human_duration = parse_duration_seconds(
+            _first_record_value(record, HUMAN_DURATION_FIELDS)
+        )
+        if human_duration is None:
+            continue
+
+        processed_tickets.add(ticket_id)
+        login_key = username.casefold()
+        totals[login_key] = totals.get(login_key, 0.0) + human_duration
+        counts[login_key] = counts.get(login_key, 0) + 1
+
+    return {
+        login_key: totals[login_key] / counts[login_key]
+        for login_key in totals
+        if counts.get(login_key, 0)
+    }
+
+
+def count_previous_day_closed(
+    records: list[dict[str, Any]],
+    reference_date: date,
+) -> int:
+    """Conta tickets humanos iniciados ontem e encerrados na data escolhida."""
+
+    previous_date = reference_date - timedelta(days=1)
+    processed_tickets: set[str] = set()
+
+    for position, record in enumerate(records):
+        username = str(
+            record.get("assigned_to_username")
+            or record.get("agent_username")
+            or ""
+        ).strip()
+        if not username or username.isdigit() or "external" in username.lower():
+            continue
+
+        created_at = parse_api_datetime(
+            _first_record_value(record, ENTRY_DATETIME_FIELDS)
+        )
+        closed_at = parse_api_datetime(
+            _first_record_value(record, EXIT_DATETIME_FIELDS)
+        )
+        if created_at is None or closed_at is None:
+            continue
+        if created_at.astimezone(BRASILIA_TZ).date() != previous_date:
+            continue
+        if closed_at.astimezone(BRASILIA_TZ).date() != reference_date:
+            continue
+
+        processed_tickets.add(_analytic_ticket_id(record, position))
+
+    return len(processed_tickets)
 
 
 class MutantClient:
@@ -778,8 +1184,9 @@ class MutantClient:
             dict[str, Any]
         ] = []
 
+        report_start_date = reference_date - timedelta(days=1)
         start_date = (
-            f"{reference_date.isoformat()}"
+            f"{report_start_date.isoformat()}"
             "T00:00"
         )
 
@@ -891,12 +1298,14 @@ class MutantClient:
 def summarize_analytic(
     records: list[dict[str, Any]],
     reference_date: date,
+    require_created_on_reference_date: bool = True,
 ) -> list[dict[str, Any]]:
     """
     Consolida produtividade por login e fila.
 
-    Considera somente registros encerrados
-    na data selecionada.
+    Por padrão, considera somente registros iniciados e encerrados na data
+    selecionada. Quando ``require_created_on_reference_date`` é falso, considera
+    todos os registros encerrados na data, independentemente do início.
     """
 
     grouped: dict[
@@ -938,6 +1347,15 @@ def summarize_analytic(
 
         if "external" in username.lower():
             continue
+
+        if require_created_on_reference_date:
+            created_at = parse_api_datetime(
+                _first_record_value(record, ENTRY_DATETIME_FIELDS)
+            )
+            if not created_at:
+                continue
+            if created_at.astimezone(BRASILIA_TZ).date() != reference_date:
+                continue
 
         closed_at = parse_api_datetime(
             record.get("closed_at")
