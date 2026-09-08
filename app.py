@@ -580,10 +580,12 @@ class NamedBytesIO(BytesIO):
         content: bytes,
         name: str,
         unit_code_hint: str | None = None,
+        queue_name_hint: str | None = None,
     ) -> None:
         super().__init__(content)
         self.name = name
         self.unit_code_hint = unit_code_hint
+        self.queue_name_hint = queue_name_hint
 
 
 
@@ -1578,6 +1580,19 @@ def inject_styles() -> None:
             font-weight: 800;
         }
 
+        .unit-card-stat.waiting {
+            margin: -.2rem;
+            padding: .2rem;
+            background: var(--site-purple-soft);
+            border-radius: 5px;
+        }
+
+        .unit-card-stat.waiting span,
+        .unit-card-stat.waiting strong {
+            color: #6d28d9;
+            font-weight: 800;
+        }
+
         .unit-card-stat.carryover {
             grid-column: 1 / -1;
             margin: -.05rem -.2rem;
@@ -2301,6 +2316,41 @@ def collect_current_logos_pauses(
     roster_agents: set[tuple[str, str]] = set()
     paused_outside_roster = 0
     unknown_pause_types: set[str] = set()
+    online_agent_keys: set[tuple[str, str]] = set()
+    ignored_pause_states_by_key: dict[
+        tuple[str, str, str], dict[str, str]
+    ] = {}
+
+    # A API pode devolver mais de um registro para o mesmo login. Um estado
+    # explicitamente online prevalece sobre objetos antigos de pausa.
+    for records in raw_by_client.values():
+        for record in records:
+            user = record.get("user")
+            if not isinstance(user, dict):
+                user = {}
+            login = str(user.get("username") or "").strip()
+            attendant = str(
+                user.get("full_name")
+                or " ".join(
+                    filter(
+                        None,
+                        [
+                            str(user.get("first_name") or "").strip(),
+                            str(user.get("last_name") or "").strip(),
+                        ],
+                    )
+                )
+                or login
+                or "—"
+            ).strip()
+            unit_code = pause_roster_unit(login, attendant)
+            if (
+                unit_code in selected_unit_codes
+                and normalize_identifier(record.get("status")) == "online"
+            ):
+                online_agent_keys.add(
+                    (unit_code, login or normalize_identifier(attendant))
+                )
 
     for records in raw_by_client.values():
         api_agents += len(records)
@@ -2326,11 +2376,15 @@ def collect_current_logos_pauses(
             ).strip()
 
             unit_code = pause_roster_unit(login, attendant)
+            agent_status = normalize_identifier(record.get("status"))
             pause_data = record.get("work_pause_time")
+            dedup_key = (unit_code, login or normalize_identifier(attendant))
 
             if unit_code:
-                roster_agents.add((unit_code, login or normalize_identifier(attendant)))
-            elif isinstance(pause_data, dict):
+                roster_agents.add(
+                    (unit_code, login or normalize_identifier(attendant))
+                )
+            elif agent_status == "unavailable" and isinstance(pause_data, dict):
                 paused_outside_roster += 1
                 continue
 
@@ -2344,6 +2398,29 @@ def collect_current_logos_pauses(
                 or pause_data.get("name")
                 or "Pausa não informada"
             ).strip()
+            if agent_status != "unavailable":
+                reason = "Status atual diferente de unavailable"
+                ignored_pause_states_by_key[(unit_code, dedup_key[1], reason)] = {
+                    "Login": login or "—",
+                    "Colaborador": attendant,
+                    "Distribuidora": UNIT_SHORT_NAMES.get(unit_code, unit_code),
+                    "Status recebido": agent_status or "não informado",
+                    "Pausa recebida": raw_pause_name,
+                    "Motivo": reason,
+                }
+                continue
+            if dedup_key in online_agent_keys:
+                reason = "Outro registro do login está online"
+                ignored_pause_states_by_key[(unit_code, dedup_key[1], reason)] = {
+                    "Login": login or "—",
+                    "Colaborador": attendant,
+                    "Distribuidora": UNIT_SHORT_NAMES.get(unit_code, unit_code),
+                    "Status recebido": agent_status,
+                    "Pausa recebida": raw_pause_name,
+                    "Motivo": reason,
+                }
+                continue
+
             start_date = parse_api_datetime(pause_data.get("start_date"))
             if start_date is None:
                 continue
@@ -2377,7 +2454,6 @@ def collect_current_logos_pauses(
                 alert = ""
                 unknown_pause_types.add(raw_pause_name)
 
-            dedup_key = (unit_code, login or normalize_identifier(attendant))
             rows_by_key[dedup_key] = {
                 "agent_id": str(record.get("id") or ""),
                 "Login": login or "—",
@@ -2407,6 +2483,18 @@ def collect_current_logos_pauses(
         "logos_roster_agents": len(roster_agents),
         "paused_outside_roster": paused_outside_roster,
         "unknown_pause_types": sorted(unknown_pause_types),
+        "online_agents_detected": len(online_agent_keys),
+        "ignored_inconsistent_pause_state_count": len(
+            ignored_pause_states_by_key
+        ),
+        "ignored_inconsistent_pause_states": sorted(
+            ignored_pause_states_by_key.values(),
+            key=lambda item: (
+                item["Distribuidora"],
+                item["Login"],
+                item["Motivo"],
+            ),
+        ),
         "updated_at": now.isoformat(),
     }
     return list(rows_by_key.values()), errors, audit
@@ -2743,7 +2831,15 @@ def empty_headcount_result() -> dict[str, Any]:
     return {
         "counts": {unit.code: None for unit in UNITS},
         "daily_counts": {unit.code: None for unit in UNITS},
+        "queue_counts": {
+            unit.code: {
+                "Principal": None,
+                "Ligação Nova e Troca": None,
+            }
+            for unit in UNITS
+        },
         "people": [],
+        "queue_people": [],
         "files": [],
         "total_online_logins": 0,
         "logos_online": 0,
@@ -2769,6 +2865,7 @@ def parse_login_logout_reports(
     records: list[dict[str, Any]] = []
     file_summaries: list[dict[str, Any]] = []
     covered_units: set[str] = set()
+    covered_unit_queues: set[tuple[str, str]] = set()
     rejected_files = 0
 
     required_headers = {
@@ -2783,6 +2880,7 @@ def parse_login_logout_reports(
     for uploaded_file in files:
         file_name = getattr(uploaded_file, "name", "relatorio.xlsx")
         unit_code_hint = getattr(uploaded_file, "unit_code_hint", None)
+        queue_name_hint = getattr(uploaded_file, "queue_name_hint", None)
         try:
             uploaded_file.seek(0)
             raw = pd.read_excel(
@@ -2876,6 +2974,10 @@ def parse_login_logout_reports(
                             unit_code_hint
                             or login_report_unit(f"{service_unit} {group}")
                         ),
+                        "queue_name": (
+                            queue_name_hint
+                            or (queue_label(group) if group else None)
+                        ),
                         "source_file": file_name,
                     }
                 )
@@ -2897,6 +2999,13 @@ def parse_login_logout_reports(
                 distributions.append(unit_code_hint)
                 distributions.sort()
             covered_units.update(distributions)
+            covered_unit_queues.update(
+                (record["unit_code"], record["queue_name"])
+                for record in file_records
+                if record["unit_code"] and record["queue_name"]
+            )
+            if unit_code_hint and queue_name_hint:
+                covered_unit_queues.add((unit_code_hint, queue_name_hint))
             file_summaries.append(
                 {
                     "Arquivo": file_name,
@@ -2961,6 +3070,26 @@ def parse_login_logout_reports(
         for item in checked
         if item["logos"] and item["record"]["unit_code"]
     ]
+    logos_online_by_unit_queue: dict[
+        tuple[str, str, str], dict[str, Any]
+    ] = {}
+    for record in online_rows:
+        unit_code = record.get("unit_code")
+        queue_name = record.get("queue_name")
+        login = record.get("login")
+        if (
+            not unit_code
+            or queue_name not in ("Principal", "Ligação Nova e Troca")
+            or not login
+            or not is_logos_employee(login, record.get("attendant"))
+        ):
+            continue
+        key = (unit_code, queue_name, login)
+        current = logos_online_by_unit_queue.get(key)
+        if current is None or record["start_order"] >= current["start_order"]:
+            logos_online_by_unit_queue[key] = record
+
+    queue_logos_records = list(logos_online_by_unit_queue.values())
     loaded_units = sorted(
         covered_units
         | {record["unit_code"] for record in records if record["unit_code"]}
@@ -2970,6 +3099,17 @@ def parse_login_logout_reports(
     }
     daily_counts: dict[str, int | None] = {
         unit.code: (0 if unit.code in loaded_units else None) for unit in UNITS
+    }
+    queue_counts: dict[str, dict[str, int | None]] = {
+        unit.code: {
+            queue_name: (
+                0
+                if (unit.code, queue_name) in covered_unit_queues
+                else None
+            )
+            for queue_name in ("Principal", "Ligação Nova e Troca")
+        }
+        for unit in UNITS
     }
     for unit_code in loaded_units:
         counts[unit_code] = len(
@@ -2986,6 +3126,17 @@ def parse_login_logout_reports(
                 if record["unit_code"] == unit_code
             }
         )
+        for queue_name in ("Principal", "Ligação Nova e Troca"):
+            if queue_counts[unit_code][queue_name] is None:
+                continue
+            queue_counts[unit_code][queue_name] = len(
+                {
+                    record["login"]
+                    for record in queue_logos_records
+                    if record["unit_code"] == unit_code
+                    and record["queue_name"] == queue_name
+                }
+            )
 
     warnings: list[str] = []
     missing_units = [
@@ -3016,6 +3167,18 @@ def parse_login_logout_reports(
         warnings.append(
             f"{without_unit} colaborador(es) Logos online não puderam ser associados a uma distribuidora."
         )
+    without_queue = len(
+        {
+            record["login"]
+            for record in logos_records
+            if not record.get("queue_name")
+        }
+    )
+    if without_queue:
+        warnings.append(
+            f"{without_queue} colaborador(es) Logos online não puderam ser "
+            "associados a uma fila."
+        )
     if rejected_files:
         warnings.append(
             f"{rejected_files} arquivo(s) não correspondem ao formato esperado."
@@ -3025,6 +3188,7 @@ def parse_login_logout_reports(
         {
             "counts": counts,
             "daily_counts": daily_counts,
+            "queue_counts": queue_counts,
             "people": [
                 {
                     "Login": record["login"],
@@ -3043,6 +3207,30 @@ def parse_login_logout_reports(
                 for record in sorted(
                     logos_records,
                     key=lambda item: normalize_identifier(item["attendant"]),
+                )
+            ],
+            "queue_people": [
+                {
+                    "Login": record["login"],
+                    "Nome": record["attendant"],
+                    "Distribuidora": next(
+                        (
+                            unit.label
+                            for unit in UNITS
+                            if unit.code == record["unit_code"]
+                        ),
+                        record["unit_code"],
+                    ),
+                    "Fila": record["queue_name"],
+                    "Login iniciado em": record["started_at"],
+                }
+                for record in sorted(
+                    queue_logos_records,
+                    key=lambda item: (
+                        item["unit_code"],
+                        item["queue_name"],
+                        normalize_identifier(item["attendant"]),
+                    ),
                 )
             ],
             "files": file_summaries,
@@ -3089,11 +3277,30 @@ def merge_headcount_results(
             ]
             merged["source_by_unit"][unit.code] = "Upload de contingência"
 
+        for queue_name in ("Principal", "Ligação Nova e Troca"):
+            automatic_queue_count = automatic["queue_counts"][unit.code][
+                queue_name
+            ]
+            fallback_queue_count = fallback["queue_counts"][unit.code][
+                queue_name
+            ]
+            merged["queue_counts"][unit.code][queue_name] = (
+                automatic_queue_count
+                if automatic_queue_count is not None
+                else fallback_queue_count
+            )
+
     merged["loaded_units"] = sorted(
         set(merged["source_by_unit"])
     )
     chosen_labels = {
         unit.label: unit.code for unit in UNITS
+    }
+    automatic_queue_pairs = {
+        (unit.code, queue_name)
+        for unit in UNITS
+        for queue_name in ("Principal", "Ligação Nova e Troca")
+        if automatic["queue_counts"][unit.code][queue_name] is not None
     }
     merged["people"] = [
         person
@@ -3109,6 +3316,24 @@ def merge_headcount_results(
             chosen_labels.get(person["Distribuidora"]) in fallback_units
             and chosen_labels.get(person["Distribuidora"]) not in automatic_units
             and chosen_labels.get(person["Distribuidora"]) in expected_units
+        )
+    ]
+    merged["queue_people"] = [
+        person
+        for person in automatic["queue_people"]
+        if (
+            chosen_labels.get(person["Distribuidora"]) in expected_units
+        )
+    ] + [
+        person
+        for person in fallback["queue_people"]
+        if (
+            chosen_labels.get(person["Distribuidora"]) in expected_units
+            and (
+                chosen_labels.get(person["Distribuidora"]),
+                person["Fila"],
+            )
+            not in automatic_queue_pairs
         )
     ]
     merged["files"] = automatic["files"] + fallback["files"]
@@ -3182,6 +3407,25 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
         logged_today_logos_text = (
             "—" if logged_today_logos is None else str(logged_today_logos)
         )
+        principal_waiting = summary.get("principal_waiting_count")
+        principal_waiting_text = (
+            "—" if principal_waiting is None else str(principal_waiting)
+        )
+        special_waiting = summary.get("special_waiting_count")
+        special_waiting_text = (
+            "—" if special_waiting is None else str(special_waiting)
+        )
+        waiting_by_queue_total = summary.get("waiting_by_queue_total")
+        waiting_by_queue_total_text = (
+            "—"
+            if waiting_by_queue_total is None
+            else str(waiting_by_queue_total)
+        )
+        waiting_total_label = (
+            "Fila de espera total"
+            if summary.get("waiting_by_queue_complete")
+            else "Fila de espera total · parcial"
+        )
         headcount_source = summary.get("headcount_source")
         source_label = (
             "API"
@@ -3220,7 +3464,7 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                 </div>
                 <div class="unit-card-stats">
                     <div class="unit-card-stat"><span>Atendimentos abertos</span><strong>{summary['open_count']}</strong></div>
-                    <div class="unit-card-stat"><span>Fila de espera</span><strong>{summary['waiting_count']}</strong></div>
+                    <div class="unit-card-stat"><span>{waiting_total_label}</span><strong>{waiting_by_queue_total_text}</strong></div>
                     <div class="unit-card-stat logged"><span>Logados Atuais · {source_label}</span><strong>{logged_logos_text} / {planned_hc_text}</strong></div>
                     <div class="unit-card-stat"><span>Logaram hoje · {source_label}</span><strong>{logged_today_logos_text}</strong></div>
                     <div class="unit-card-stat carryover"><span>Iniciados ontem e finalizados hoje</span><strong>{summary['previous_day_closed']}</strong></div>
@@ -3245,6 +3489,98 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
         f'{heading_html}\n<section class="unit-card-grid">{cards_html}</section>',
         unsafe_allow_html=True,
     )
+
+
+def render_waiting_by_queue_table(
+    runtime_units: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Exibe o snapshot da fila de espera separado por campanha."""
+
+    rows: list[dict[str, Any]] = []
+    for item in runtime_units:
+        summary = item["summary"]
+        principal = summary.get("principal_waiting_count")
+        special = summary.get("special_waiting_count")
+        principal_online = summary.get("principal_online_logos")
+        special_online = summary.get("special_online_logos")
+        waiting_complete = bool(summary.get("waiting_by_queue_complete"))
+        staffing_complete = (
+            principal_online is not None and special_online is not None
+        )
+        complete = waiting_complete and staffing_complete
+        has_any_value = any(
+            value is not None
+            for value in (
+                principal,
+                special,
+                principal_online,
+                special_online,
+            )
+        )
+        status = (
+            "Completo"
+            if complete
+            else "Parcial"
+            if has_any_value
+            else "Indisponível"
+        )
+        rows.append(
+            {
+                "Distribuidora": item["unit"].label,
+                "Clientes · Principal": principal,
+                "Logos online · Principal": principal_online,
+                "Clientes · Ligação Nova e Troca": special,
+                "Logos online · Ligação Nova e Troca": special_online,
+                "Total em espera": summary.get("waiting_by_queue_total"),
+                "Coleta concluída": format_analytic_collection_time(
+                    summary.get("waiting_collected_at")
+                ),
+                "Status da consulta": status,
+            }
+        )
+    st.markdown("### Clientes em fila de espera")
+    st.caption(
+        "Snapshot atual da Mutant com clientes em espera e atendentes Logos "
+        "online, separados por campanha."
+    )
+    st.dataframe(
+        pd.DataFrame(rows),
+        use_container_width=True,
+        hide_index=True,
+        height=min(260, 38 + 35 * len(rows)),
+        column_config={
+            "Distribuidora": st.column_config.TextColumn(
+                "Distribuidora", width="medium"
+            ),
+            "Clientes · Principal": st.column_config.NumberColumn(
+                "Clientes · Principal", format="%d"
+            ),
+            "Logos online · Principal": st.column_config.NumberColumn(
+                "Logos online · Principal", format="%d"
+            ),
+            "Clientes · Ligação Nova e Troca": st.column_config.NumberColumn(
+                "Clientes · Ligação Nova e Troca", format="%d"
+            ),
+            "Logos online · Ligação Nova e Troca": st.column_config.NumberColumn(
+                "Logos online · Ligação Nova e Troca", format="%d"
+            ),
+            "Total em espera": st.column_config.NumberColumn(
+                "Total em espera", format="%d"
+            ),
+            "Coleta concluída": st.column_config.TextColumn(
+                "Coleta concluída", width="large"
+            ),
+            "Status da consulta": st.column_config.TextColumn(
+                "Status da consulta", width="medium"
+            ),
+        },
+    )
+    st.caption(
+        "São contados somente colaboradores da EPS Logos com status “Ainda "
+        "online”. Um colaborador conectado às duas campanhas conta nas duas "
+        "filas. Quando alguma consulta falhar, o status aparece como parcial."
+    )
+    return rows
 
 
 def hourly_productivity_counts(
@@ -3402,55 +3738,19 @@ def flow_time_text(value: Any) -> str:
     return format_seconds(value)
 
 
-def render_hourly_queue_flow(
-    runtime_units: list[dict[str, Any]],
+def render_hourly_queue_detail(
+    item: dict[str, Any],
+    queue_name: str,
     reference_date: date,
 ) -> None:
-    """Exibe tabela e gráficos horários de volume e tempos por fila."""
-
-    render_section_title(
-        "Fluxo por hora",
-        "Entrada, saída, demanda, resíduo e tempos por distribuidora e fila",
-        healthy=not any(
-            item["errors"].get("analytic_report") for item in runtime_units
-        ),
-    )
-    st.caption(
-        "Demanda acumulada = entrada da hora + resíduo anterior. "
-        "Resíduo = máximo entre zero e demanda acumulada menos saída."
-    )
-
-    filter_columns = st.columns([1.15, 1.25, 2.6])
-    unit_codes = [item["unit"].code for item in runtime_units]
-    with filter_columns[0]:
-        selected_unit_code = st.selectbox(
-            "Distribuidora",
-            options=unit_codes,
-            format_func=lambda code: UNIT_SHORT_NAMES.get(code, code),
-            key="hourly_flow_unit",
-        )
-    selected_item = next(
-        item for item in runtime_units if item["unit"].code == selected_unit_code
-    )
-    queue_options = list((selected_item.get("hourly_queue_flow") or {}).keys())
-    with filter_columns[1]:
-        selected_queue = st.selectbox(
-            "Fila",
-            options=queue_options or ["Principal", "Ligação Nova e Troca"],
-            key="hourly_flow_queue",
-        )
-    with filter_columns[2]:
-        st.info(
-            "08h representa o período de 08:00 a 08:59. Os tempos são "
-            "calculados sobre os atendimentos encerrados em cada hora."
-        )
+    """Exibe gráficos e tabela horária de uma única fila."""
 
     dataframe = hourly_flow_dataframe(
-        selected_item,
-        selected_queue,
+        item,
+        queue_name,
         reference_date,
     )
-    audit = selected_item.get("hourly_queue_flow_audit") or {}
+    audit = item.get("hourly_queue_flow_audit") or {}
 
     if dataframe.empty:
         st.info(
@@ -3469,7 +3769,7 @@ def render_hourly_queue_flow(
             "Entradas no período",
             total_entries,
             "↘",
-            f"{UNIT_SHORT_NAMES.get(selected_unit_code, selected_unit_code)} · {selected_queue}",
+            f"{UNIT_SHORT_NAMES.get(item['unit'].code, item['unit'].code)} · {queue_name}",
             accent=True,
         )
     with metric_columns[1]:
@@ -3726,6 +4026,219 @@ def render_hourly_queue_flow(
         st.caption("TME/TEMAX: campo individual de espera ainda não identificado.")
 
 
+def latest_hourly_time(
+    dataframe: pd.DataFrame,
+    column: str,
+    include_hour: bool = False,
+) -> str:
+    """Retorna o tempo mais recente e, opcionalmente, sua hora de referência."""
+
+    if dataframe.empty or column not in dataframe:
+        return "—"
+    valid_rows = dataframe.loc[dataframe[column].notna()]
+    if valid_rows.empty:
+        return "—"
+    latest_row = valid_rows.iloc[-1]
+    time_text = flow_time_text(latest_row[column])
+    if not include_hour:
+        return time_text
+    hour_text = str(latest_row.get("Hora") or "—")
+    return f"{time_text} · {hour_text}"
+
+
+def format_analytic_collection_time(value: Any) -> str:
+    """Formata o instante em que a base analítica terminou de ser coletada."""
+
+    if value in (None, ""):
+        return "—"
+    collected_at = value if isinstance(value, datetime) else parse_api_datetime(value)
+    if collected_at is None:
+        return str(value)
+    return collected_at.astimezone(BRASILIA_TZ).strftime("%d/%m/%Y %H:%M:%S")
+
+
+def analytic_snapshot_filename_time(value: Any) -> str:
+    """Cria o trecho de data e hora usado no arquivo do snapshot analítico."""
+
+    collected_at = value if isinstance(value, datetime) else parse_api_datetime(value)
+    if collected_at is None:
+        collected_at = datetime.now(BRASILIA_TZ)
+    return collected_at.astimezone(BRASILIA_TZ).strftime("%Y%m%d_%H%M%S")
+
+
+def render_hourly_queue_flow(
+    runtime_units: list[dict[str, Any]],
+    reference_date: date,
+) -> None:
+    """Exibe todas as distribuidoras e filas sem filtros que recarreguem a página."""
+
+    render_section_title(
+        "Fluxo por hora",
+        "Todas as distribuidoras e filas em uma única visão",
+        healthy=not any(
+            item["errors"].get("analytic_report") for item in runtime_units
+        ),
+    )
+    st.info(
+        "Os volumes representam o período do dia. Demanda acumulada = entrada "
+        "da hora + resíduo anterior. Resíduo = máximo entre zero e demanda "
+        "acumulada menos saída."
+    )
+
+    summary_rows: list[dict[str, Any]] = []
+    for item in runtime_units:
+        unit = item["unit"]
+        queue_names = list((item.get("hourly_queue_flow") or {}).keys())
+        if not queue_names:
+            queue_names = ["Principal", "Ligação Nova e Troca"]
+
+        for queue_name in queue_names:
+            dataframe = hourly_flow_dataframe(item, queue_name, reference_date)
+            report_failed = bool(item["errors"].get("analytic_report"))
+            if dataframe.empty or report_failed:
+                summary_rows.append(
+                    {
+                        "Distribuidora": unit.label,
+                        "Fila": queue_name,
+                        "Entrada": None,
+                        "Saída": None,
+                        "Resíduo atual": None,
+                        "Demanda acumulada": None,
+                        "TMA": "—",
+                        "TME": "—",
+                        "TEMAX": "—",
+                        "TAMAX": "—",
+                        "Registros usados": len(item.get("analytic_records") or []),
+                        "Coleta concluída": format_analytic_collection_time(
+                            item.get("analytic_collected_at")
+                        ),
+                    }
+                )
+                continue
+
+            summary_rows.append(
+                {
+                    "Distribuidora": unit.label,
+                    "Fila": queue_name,
+                    "Entrada": int(dataframe["Entrada"].sum()),
+                    "Saída": int(dataframe["Saída"].sum()),
+                    "Resíduo atual": int(dataframe["Resíduo"].iloc[-1]),
+                    "Demanda acumulada": int(
+                        dataframe["Demanda Acumulada"].iloc[-1]
+                    ),
+                    "TMA": latest_hourly_time(
+                        dataframe, "TMA (s)", include_hour=True
+                    ),
+                    "TME": latest_hourly_time(
+                        dataframe, "TME (s)", include_hour=True
+                    ),
+                    "TEMAX": latest_hourly_time(
+                        dataframe, "TEMAX (s)", include_hour=True
+                    ),
+                    "TAMAX": latest_hourly_time(
+                        dataframe, "TAMAX (s)", include_hour=True
+                    ),
+                    "Registros usados": len(item.get("analytic_records") or []),
+                    "Coleta concluída": format_analytic_collection_time(
+                        item.get("analytic_collected_at")
+                    ),
+                }
+            )
+
+    st.markdown("### Visão consolidada")
+    summary_dataframe = pd.DataFrame(summary_rows)
+    table_view, card_view = st.tabs(["Visão em tabela", "Visão em cards"])
+    with table_view:
+        st.dataframe(
+            summary_dataframe,
+            use_container_width=True,
+            hide_index=True,
+            height=min(470, 38 + 35 * len(summary_dataframe)),
+            column_config={
+                "Distribuidora": st.column_config.TextColumn(
+                    "Distribuidora", width="medium"
+                ),
+                "Fila": st.column_config.TextColumn("Fila", width="large"),
+                "Entrada": st.column_config.NumberColumn("Entrada", format="%d"),
+                "Saída": st.column_config.NumberColumn("Saída", format="%d"),
+                "Resíduo atual": st.column_config.NumberColumn(
+                    "Resíduo atual", format="%d"
+                ),
+                "Demanda acumulada": st.column_config.NumberColumn(
+                    "Demanda acumulada", format="%d"
+                ),
+                "Registros usados": st.column_config.NumberColumn(
+                    "Registros usados", format="%d"
+                ),
+                "Coleta concluída": st.column_config.TextColumn(
+                    "Coleta concluída", width="large"
+                ),
+            },
+        )
+
+    with card_view:
+        card_columns = st.columns(2)
+        for row_index, row in enumerate(summary_rows):
+            with card_columns[row_index % 2]:
+                with st.container(border=True):
+                    st.markdown(
+                        f"**{row['Distribuidora']} · {row['Fila']}**"
+                    )
+                    st.caption(
+                        f"Base usada: {row['Registros usados']} registros · "
+                        f"coleta concluída em {row['Coleta concluída']}"
+                    )
+                    st.caption(f"TEMAX: {row['TEMAX']}")
+                    value_columns = st.columns(4)
+                    value_columns[0].metric(
+                        "Entrada",
+                        "—" if row["Entrada"] is None else row["Entrada"],
+                    )
+                    value_columns[1].metric(
+                        "Saída",
+                        "—" if row["Saída"] is None else row["Saída"],
+                    )
+                    value_columns[2].metric(
+                        "Resíduo",
+                        (
+                            "—"
+                            if row["Resíduo atual"] is None
+                            else row["Resíduo atual"]
+                        ),
+                    )
+                    value_columns[3].metric("TMA", row["TMA"])
+                    demand_text = (
+                        "—"
+                        if row["Demanda acumulada"] is None
+                        else row["Demanda acumulada"]
+                    )
+                    st.caption(
+                        f"Demanda acumulada: {demand_text} · "
+                        f"TME: {row['TME']} · TAMAX: {row['TAMAX']}"
+                    )
+    st.caption(
+        "TMA, TME, TEMAX e TAMAX mostram o último intervalo com valor e trazem "
+        "a hora de referência após o tempo. A base e o horário da coleta são "
+        "os mesmos usados para gerar os volumes, tempos e o download do snapshot."
+    )
+
+    st.markdown("### Detalhamento por distribuidora")
+    for unit_index, item in enumerate(runtime_units):
+        unit = item["unit"]
+        queue_names = list((item.get("hourly_queue_flow") or {}).keys())
+        if not queue_names:
+            queue_names = ["Principal", "Ligação Nova e Troca"]
+
+        with st.expander(
+            f"{UNIT_ICONS.get(unit.code, '📍')} {unit.label}",
+            expanded=unit_index == 0,
+        ):
+            queue_tabs = st.tabs(queue_names)
+            for queue_tab, queue_name in zip(queue_tabs, queue_names):
+                with queue_tab:
+                    render_hourly_queue_detail(item, queue_name, reference_date)
+
+
 def format_integer_pt(value: int) -> str:
     """Formata inteiros com separador de milhar brasileiro."""
 
@@ -3759,6 +4272,10 @@ def render_productivity_insights(
         runtime_units,
         reference_date,
     )
+    productivity_chart_dataframe = hourly_dataframe.copy()
+    productivity_chart_dataframe["Hora do intervalo"] = (
+        productivity_chart_dataframe["Período"].str.slice(0, 2) + "h"
+    )
     chart_spec = {
         "autosize": {
             "type": "fit",
@@ -3767,10 +4284,12 @@ def render_productivity_insights(
         },
         "encoding": {
             "x": {
-                "field": "Horário",
+                "field": "Hora do intervalo",
                 "type": "nominal",
-                "title": "Fim do intervalo",
-                "sort": hourly_dataframe["Horário"].tolist(),
+                "title": "Hora do intervalo",
+                "sort": productivity_chart_dataframe[
+                    "Hora do intervalo"
+                ].tolist(),
                 "scale": {
                     "paddingInner": 0.55,
                     "paddingOuter": 0.25,
@@ -3789,7 +4308,11 @@ def render_productivity_insights(
             },
             "color": {"value": "#7c3aed"},
             "tooltip": [
-                {"field": "Horário", "type": "nominal", "title": "Hora"},
+                {
+                    "field": "Hora do intervalo",
+                    "type": "nominal",
+                    "title": "Hora",
+                },
                 {"field": "Período", "type": "nominal", "title": "Período"},
                 {
                     "field": "Atendimentos no período",
@@ -3819,14 +4342,14 @@ def render_productivity_insights(
         },
     }
     st.vega_lite_chart(
-        hourly_dataframe,
+        productivity_chart_dataframe,
         chart_spec,
         use_container_width=True,
     )
     st.caption(
-        "Todas as barras usam o horário final do intervalo: 10h representa "
-        "09:00–09:59, 11h representa 10:00–10:59, 12h representa "
-        "11:00–11:59, e assim sucessivamente. Passe o mouse para ver a "
+        "Todas as barras usam a hora à qual a produtividade pertence: 08h "
+        "representa 08:00–08:59, 09h representa 09:00–09:59, e assim "
+        "sucessivamente. Passe o mouse para ver a "
         "quantidade de atendimentos concluídos naquele período."
     )
 
@@ -4412,7 +4935,7 @@ if hasattr(st, "fragment"):
 # ---------------------------------------------------------------------------
 
 diagnostic_result: dict[str, Any] = {
-    "executed_at": datetime.now().astimezone().isoformat(),
+    "executed_at": datetime.now(BRASILIA_TZ).isoformat(),
     "reference_date": reference_date.isoformat(),
     "units": {},
 }
@@ -4429,10 +4952,13 @@ progress = st.progress(0, text="Preparando consultas...")
 for index, unit in enumerate(selected_units, start=1):
     errors: dict[str, str] = {}
     ticket_stats: dict[str, Any] = {}
+    queue_ticket_stats: dict[str, dict[str, Any]] = {}
+    ticket_stats_collected_at: str | None = None
     human_time: dict[str, Any] = {}
     analytic_records: list[dict[str, Any]] = []
     productivity_rows: list[dict[str, Any]] = []
     individual_productivity_rows: list[dict[str, Any]] = []
+    analytic_collected_at: str | None = None
     campaign_wait_times: dict[str, dict[str, Any]] = {}
     tme_values: dict[str, str] = {}
     tme_ticket_counts: dict[str, int] = {}
@@ -4464,6 +4990,11 @@ for index, unit in enumerate(selected_units, start=1):
             unit.campaign_ids,
             start=1,
         ):
+            queue_name_hint = (
+                "Principal"
+                if campaign_index == 1
+                else "Ligação Nova e Troca"
+            )
             export_key = (unit.base_url, unit_username, campaign_id)
             if export_key in headcount_export_attempted:
                 continue
@@ -4482,6 +5013,7 @@ for index, unit in enumerate(selected_units, start=1):
                             f"{reference_date.isoformat()}.xlsx"
                         ),
                         unit_code_hint=unit.code,
+                        queue_name_hint=queue_name_hint,
                     )
                 )
             except MutantApiError as exc:
@@ -4490,53 +5022,65 @@ for index, unit in enumerate(selected_units, start=1):
                     f"campanha {campaign_index}: {exc}"
                 )
 
-        if unit.code == "ELEKTRO":
-            # No ambiente compartilhado, a Mutant aceita as campanhas da
-            # Elektro separadamente, mas rejeita as duas no mesmo payload.
-            queue_names = ("Principal", "Ligação Nova e Troca")
-            ticket_stats_parts: list[dict[str, Any]] = []
-            ticket_stats_errors: list[str] = []
-
-            for campaign_index, campaign_id in enumerate(unit.campaign_ids):
-                queue_name = (
-                    queue_names[campaign_index]
-                    if campaign_index < len(queue_names)
-                    else f"Campanha {campaign_index + 1}"
-                )
-                try:
-                    ticket_stats_parts.append(
-                        client.ticket_stats((campaign_id,))
-                    )
-                except MutantApiError as exc:
-                    ticket_stats_errors.append(f"{queue_name}: {exc}")
-
-            if ticket_stats_parts:
-                ticket_stats = {
-                    field: sum(
-                        safe_int(part.get(field))
-                        for part in ticket_stats_parts
-                    )
-                    for field in (
-                        "open",
-                        "waiting",
-                        "closed",
-                        "pending_from_previous_day",
-                    )
-                }
-
-            if ticket_stats_errors:
-                error_message = " | ".join(ticket_stats_errors)
-                if ticket_stats_parts:
-                    errors["ticket_stats_partial"] = (
-                        "Volumetria parcial da Elektro. " + error_message
-                    )
-                else:
-                    errors["ticket_stats"] = error_message
-        else:
+        queue_names = ("Principal", "Ligação Nova e Troca")
+        ticket_stats_errors: list[str] = []
+        for campaign_index, campaign_id in enumerate(unit.campaign_ids):
+            queue_name = (
+                queue_names[campaign_index]
+                if campaign_index < len(queue_names)
+                else f"Campanha {campaign_index + 1}"
+            )
             try:
+                queue_ticket_stats[queue_name] = client.ticket_stats(
+                    (campaign_id,)
+                )
+            except MutantApiError as exc:
+                ticket_stats_errors.append(f"{queue_name}: {exc}")
+
+        ticket_stats_collected_at = datetime.now(BRASILIA_TZ).isoformat()
+
+        combined_ticket_stats_error: str | None = None
+        if unit.code != "ELEKTRO":
+            try:
+                # Mantém a fonte consolidada já usada pelo dashboard para não
+                # alterar os demais indicadores de volumetria.
                 ticket_stats = client.ticket_stats(unit.campaign_ids)
             except MutantApiError as exc:
-                errors["ticket_stats"] = str(exc)
+                combined_ticket_stats_error = str(exc)
+
+        if not ticket_stats and queue_ticket_stats:
+            # A Elektro não aceita as duas campanhas no mesmo payload. Este
+            # fallback também mantém cobertura se a consulta consolidada falhar.
+            ticket_stats = {
+                field: sum(
+                    safe_int(part.get(field))
+                    for part in queue_ticket_stats.values()
+                )
+                for field in (
+                    "open",
+                    "waiting",
+                    "closed",
+                    "pending_from_previous_day",
+                )
+            }
+
+        if ticket_stats_errors:
+            error_message = " | ".join(ticket_stats_errors)
+            if queue_ticket_stats:
+                errors["ticket_stats_by_queue_partial"] = (
+                    f"Fila de espera parcial de {unit.label}. " + error_message
+                )
+            else:
+                errors["ticket_stats_by_queue"] = error_message
+
+        if combined_ticket_stats_error:
+            if queue_ticket_stats:
+                errors["ticket_stats_combined_fallback"] = (
+                    "A consulta consolidada falhou; os totais foram somados "
+                    "a partir das filas. " + combined_ticket_stats_error
+                )
+            else:
+                errors["ticket_stats"] = combined_ticket_stats_error
 
         try:
             human_time = client.human_service_time(
@@ -4551,6 +5095,7 @@ for index, unit in enumerate(selected_units, start=1):
                 unit.campaign_ids,
                 reference_date,
             )
+            analytic_collected_at = datetime.now(BRASILIA_TZ).isoformat()
             productivity_rows = summarize_analytic(
                 analytic_records,
                 reference_date,
@@ -4629,6 +5174,31 @@ for index, unit in enumerate(selected_units, start=1):
     )
     open_count = safe_int(ticket_stats.get("open"))
     waiting_count = safe_int(ticket_stats.get("waiting"))
+    principal_queue_stats = queue_ticket_stats.get("Principal")
+    special_queue_stats = queue_ticket_stats.get("Ligação Nova e Troca")
+    principal_waiting_count = (
+        safe_int(principal_queue_stats.get("waiting"))
+        if principal_queue_stats is not None
+        else None
+    )
+    special_waiting_count = (
+        safe_int(special_queue_stats.get("waiting"))
+        if special_queue_stats is not None
+        else None
+    )
+    waiting_by_queue_total = (
+        sum(
+            value
+            for value in (principal_waiting_count, special_waiting_count)
+            if value is not None
+        )
+        if principal_waiting_count is not None or special_waiting_count is not None
+        else None
+    )
+    waiting_by_queue_complete = all(
+        queue_name in queue_ticket_stats
+        for queue_name in ("Principal", "Ligação Nova e Troca")
+    )
     closed_stats = safe_int(ticket_stats.get("closed"))
     previous_day = safe_int(ticket_stats.get("pending_from_previous_day"))
     previous_day_closed = count_previous_day_closed(
@@ -4667,6 +5237,11 @@ for index, unit in enumerate(selected_units, start=1):
         "individual_special_total": individual_special_total,
         "open_count": open_count,
         "waiting_count": waiting_count,
+        "principal_waiting_count": principal_waiting_count,
+        "special_waiting_count": special_waiting_count,
+        "waiting_by_queue_total": waiting_by_queue_total,
+        "waiting_by_queue_complete": waiting_by_queue_complete,
+        "waiting_collected_at": ticket_stats_collected_at,
         "closed_stats": closed_stats,
         "previous_day": previous_day,
         "previous_day_closed": previous_day_closed,
@@ -4683,8 +5258,11 @@ for index, unit in enumerate(selected_units, start=1):
         "credential_label": credential_label,
         "authentication_ok": authentication_ok,
         "ticket_stats": ticket_stats,
+        "queue_ticket_stats": queue_ticket_stats,
+        "ticket_stats_collected_at": ticket_stats_collected_at,
         "human_time": human_time,
         "analytic_records": analytic_records,
+        "analytic_collected_at": analytic_collected_at,
         "productivity_rows": productivity_rows,
         "individual_productivity_rows": individual_productivity_rows,
         "hourly_productivity": hourly_productivity,
@@ -4706,12 +5284,15 @@ for index, unit in enumerate(selected_units, start=1):
         "credential_type": credential_label,
         "campaign_ids": list(unit.campaign_ids),
         "ticket_stats": ticket_stats,
+        "ticket_stats_by_queue": queue_ticket_stats,
+        "ticket_stats_collected_at": ticket_stats_collected_at,
         "human_service_time": human_time,
         "average_wait_time_by_campaign": campaign_wait_times,
         "tme_values": tme_values,
         "tme_ticket_counts": tme_ticket_counts,
         "tme_warnings": tme_warnings,
         "analytic_record_count": len(analytic_records),
+        "analytic_collected_at": analytic_collected_at,
         "productivity": productivity_rows,
         "individual_productivity": individual_productivity_rows,
         "previous_day_closed_today": previous_day_closed,
@@ -4749,11 +5330,20 @@ for item in runtime_units:
     unit_code = item["unit"].code
     logged_logos = headcount_result["counts"].get(unit_code)
     logged_today_logos = headcount_result["daily_counts"].get(unit_code)
+    queue_counts = headcount_result["queue_counts"].get(unit_code) or {}
+    principal_online_logos = queue_counts.get("Principal")
+    special_online_logos = queue_counts.get("Ligação Nova e Troca")
     headcount_source = headcount_result["source_by_unit"].get(unit_code)
     item["summary"]["logged_logos"] = logged_logos
     item["summary"]["logged_today_logos"] = logged_today_logos
+    item["summary"]["principal_online_logos"] = principal_online_logos
+    item["summary"]["special_online_logos"] = special_online_logos
     item["summary"]["headcount_source"] = headcount_source
     diagnostic_result["units"][unit_code]["logged_logos"] = logged_logos
+    diagnostic_result["units"][unit_code]["logos_online_by_queue"] = {
+        "Principal": principal_online_logos,
+        "Ligação Nova e Troca": special_online_logos,
+    }
     diagnostic_result["units"][unit_code]["headcount_source"] = headcount_source
 
 progress.empty()
@@ -4908,6 +5498,9 @@ with overview_tab:
         )
     )
 
+    diagnostic_result["waiting_by_queue"] = render_waiting_by_queue_table(
+        runtime_units
+    )
     render_unit_overview_cards(runtime_units)
 
     units_with_errors = [item for item in runtime_units if item["errors"]]
@@ -5391,7 +5984,10 @@ with technical_tab:
             )
 
         with st.expander("Resposta original das estatísticas dos tickets"):
+            st.caption("Consolidado das campanhas consultadas com sucesso:")
             st.json(item["ticket_stats"] or {})
+            st.caption("Respostas separadas por fila:")
+            st.json(item.get("queue_ticket_stats") or {})
 
         with st.expander("Campos e amostra do relatório analítico"):
             records = item["analytic_records"]
@@ -5402,6 +5998,49 @@ with technical_tab:
                 st.json(records[:3])
             else:
                 st.write("Nenhum registro analítico foi retornado.")
+
+        snapshot_payload = {
+            "metadata": {
+                "distributor_code": unit.code,
+                "distributor": unit.label,
+                "reference_date": reference_date.isoformat(),
+                "analytic_collected_at": item.get("analytic_collected_at"),
+                "ticket_stats_collected_at": item.get(
+                    "ticket_stats_collected_at"
+                ),
+                "analytic_record_count": len(records),
+                "campaign_ids": list(unit.campaign_ids),
+                "timezone": "America/Sao_Paulo",
+            },
+            "ticket_stats_by_queue": item.get("queue_ticket_stats") or {},
+            "results": records,
+            "calculated_hourly_queue_flow": item.get("hourly_queue_flow") or {},
+            "calculation_audit": item.get("hourly_queue_flow_audit") or {},
+        }
+        snapshot_time = analytic_snapshot_filename_time(
+            item.get("analytic_collected_at")
+        )
+        st.download_button(
+            label="Baixar base analítica usada neste carregamento",
+            data=json.dumps(
+                snapshot_payload,
+                ensure_ascii=False,
+                indent=2,
+                default=str,
+            ),
+            file_name=(
+                f"snapshot_analitico_{unit.code.lower()}_"
+                f"{reference_date.isoformat()}_{snapshot_time}.json"
+            ),
+            mime="application/json",
+            key=f"download_analytic_snapshot_{unit.code}",
+            use_container_width=False,
+        )
+        st.caption(
+            "Este arquivo contém exatamente os registros mantidos em memória "
+            "neste carregamento, os cálculos horários e o horário da coleta. "
+            "Ele pode conter dados de clientes e colaboradores."
+        )
 
         with st.expander("Conferência do fluxo por hora"):
             flow_audit = item.get("hourly_queue_flow_audit") or {}
