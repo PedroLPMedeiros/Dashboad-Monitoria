@@ -76,7 +76,7 @@ GENERAL_DAILY_PRODUCTIVITY_GOAL = (
 )
 
 # Intervalo único de atualização automática de todas as informações.
-DASHBOARD_AUTO_REFRESH_SECONDS = 10 * 60
+DASHBOARD_AUTO_REFRESH_SECONDS = 30 * 60
 AUTO_REFRESH_TOLERANCE_SECONDS = 5
 PAUSE_AUTO_REFRESH_SECONDS = DASHBOARD_AUTO_REFRESH_SECONDS
 
@@ -2571,7 +2571,7 @@ def render_pause_monitor(runtime_units: list[dict[str, Any]]) -> None:
     else:
         subtitle = (
             "Colaboradores da EPS Logos · atualização automática a cada "
-            "10 minutos ou imediata pelo botão"
+            "30 minutos ou imediata pelo botão"
         )
 
     with title_slot.container():
@@ -4850,7 +4850,7 @@ with st.sidebar:
         )
 
     st.caption("Credenciais e tokens permanecem somente nesta execução local.")
-    st.caption("Atualização automática de todos os dados: a cada 10 minutos.")
+    st.caption("Atualização automática de todos os dados: a cada 30 minutos.")
 
 
 monitoring_active = bool(
