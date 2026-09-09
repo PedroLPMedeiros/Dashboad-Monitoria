@@ -62,8 +62,8 @@ UNIT_ICONS = {
 }
 
 # Metas usadas no dashboard publicado: HC planejado por distribuidora
-# multiplicado pela referência individual de 48 atendimentos por dia.
-DAILY_PRODUCTIVITY_PER_HC = 48
+# multiplicado pela referência individual de 49 atendimentos por dia.
+DAILY_PRODUCTIVITY_PER_HC = 49
 UNIT_PLANNED_HEADCOUNT = {
     "BRASILIA": 7,
     "COELBA": 18,
