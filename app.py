@@ -1,4 +1,3 @@
-################################################
 """Dashboard local de monitoramento integrado ao Mutant360.
 
 Esta versão altera somente a apresentação da aplicação. As consultas,
@@ -3465,6 +3464,8 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                 <div class="unit-card-stats">
                     <div class="unit-card-stat"><span>Atendimentos abertos</span><strong>{summary['open_count']}</strong></div>
                     <div class="unit-card-stat"><span>{waiting_total_label}</span><strong>{waiting_by_queue_total_text}</strong></div>
+                    <div class="unit-card-stat waiting"><span>Fila de Espera · Principal</span><strong>{principal_waiting_text}</strong></div>
+                    <div class="unit-card-stat waiting"><span>Fila de Espera · Ligação Nova e Troca</span><strong>{special_waiting_text}</strong></div>
                     <div class="unit-card-stat logged"><span>Logados Atuais · {source_label}</span><strong>{logged_logos_text} / {planned_hc_text}</strong></div>
                     <div class="unit-card-stat"><span>Logaram hoje · {source_label}</span><strong>{logged_today_logos_text}</strong></div>
                     <div class="unit-card-stat carryover"><span>Iniciados ontem e finalizados hoje</span><strong>{summary['previous_day_closed']}</strong></div>
@@ -4021,7 +4022,11 @@ def render_hourly_queue_detail(
             "As entradas podem aparecer zeradas até o nome do campo ser mapeado."
         )
     if not audit.get("available_human_duration_fields"):
-        st.caption("TMA/TAMAX: campo individual de atendimento ainda não identificado.")
+        st.caption("TMA: campo individual de atendimento ainda não identificado.")
+    if not audit.get("available_individual_tma_duration_fields"):
+        st.caption(
+            "TAMAX: o campo chat_time_in_seconds ainda não foi identificado."
+        )
     if not audit.get("available_wait_duration_fields"):
         st.caption("TME/TEMAX: campo individual de espera ainda não identificado.")
 
@@ -4900,7 +4905,7 @@ if run_diagnostic:
 
 
 # Agenda uma nova execução completa da aplicação. O fragmento desperta a cada
-# dez minutos e o ``st.rerun`` refaz autenticação, consultas e cálculos de todas
+# trinta minutos e o ``st.rerun`` refaz autenticação, consultas e cálculos de todas
 # as abas sem recarregar manualmente a página no navegador.
 full_refresh_key = "dashboard_last_full_refresh_at"
 if run_diagnostic or not isinstance(
@@ -5567,8 +5572,9 @@ with productivity_tab:
                         "TMA atual (calculado)",
                         width="medium",
                         help=(
-                            "Média de total_agent_time dos atendimentos encerrados "
-                            "no dia pelo colaborador, independentemente do início, "
+                            "Média de chat_time_in_seconds dos atendimentos "
+                            "encerrados no dia pelo colaborador, independentemente "
+                            "do início, "
                             "considerando todas as filas e distribuidoras "
                             "selecionadas."
                         ),

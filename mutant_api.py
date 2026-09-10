@@ -1,4 +1,3 @@
-###################################################################
 """Cliente local para integração com o Mutant360."""
 
 from __future__ import annotations
@@ -291,6 +290,13 @@ HUMAN_DURATION_FIELDS = (
     "tempo_atendimento_humano",
 )
 
+# O TMA individual usa somente o tempo efetivo de conversa informado pela
+# Mutant. Não usamos total_agent_time como alternativa porque esse campo pode
+# incluir todo o período em que o ticket permaneceu atribuído ao colaborador.
+INDIVIDUAL_TMA_DURATION_FIELDS = (
+    "chat_time_in_seconds",
+)
+
 
 def _first_record_value(record: dict[str, Any], fields: tuple[str, ...]) -> Any:
     """Localiza o primeiro campo conhecido, inclusive em objetos aninhados."""
@@ -418,7 +424,7 @@ def build_hourly_queue_flow(
                 "entries": 0,
                 "exits": 0,
                 "human_durations": [],
-                "human_durations_by_agent": {},
+                "individual_tma_durations_by_agent": {},
                 "wait_durations": [],
             }
             for hour in range(24)
@@ -432,6 +438,7 @@ def build_hourly_queue_flow(
         "entries_without_valid_datetime": 0,
         "exits_considered": 0,
         "exits_without_human_duration": 0,
+        "exits_without_individual_tma_duration": 0,
         "exits_without_wait_duration": 0,
     }
     entry_tickets: set[str] = set()
@@ -487,10 +494,17 @@ def build_hourly_queue_flow(
             audit["exits_without_human_duration"] += 1
         else:
             bucket["human_durations"].append(human_duration)
-            bucket["human_durations_by_agent"].setdefault(
+
+        individual_tma_duration = parse_duration_seconds(
+            _first_record_value(record, INDIVIDUAL_TMA_DURATION_FIELDS)
+        )
+        if individual_tma_duration is None:
+            audit["exits_without_individual_tma_duration"] += 1
+        else:
+            bucket["individual_tma_durations_by_agent"].setdefault(
                 username,
                 [],
-            ).append(human_duration)
+            ).append(individual_tma_duration)
 
         wait_duration = parse_duration_seconds(
             _first_record_value(record, WAIT_DURATION_FIELDS)
@@ -511,13 +525,13 @@ def build_hourly_queue_flow(
             accumulated_demand = previous_residue + entries
             residue = max(0, accumulated_demand - exits)
             human_values = list(bucket["human_durations"])
-            human_values_by_agent = dict(
-                bucket["human_durations_by_agent"]
+            individual_tma_values_by_agent = dict(
+                bucket["individual_tma_durations_by_agent"]
             )
             wait_values = list(bucket["wait_durations"])
             agent_tma_values = [
                 sum(agent_values) / len(agent_values)
-                for agent_values in human_values_by_agent.values()
+                for agent_values in individual_tma_values_by_agent.values()
                 if agent_values
             ]
             queue_rows.append(
@@ -554,6 +568,11 @@ def build_hourly_queue_flow(
     audit["available_human_duration_fields"] = sorted(
         field for field in HUMAN_DURATION_FIELDS if any(field in record for record in records)
     )
+    audit["available_individual_tma_duration_fields"] = sorted(
+        field
+        for field in INDIVIDUAL_TMA_DURATION_FIELDS
+        if any(field in record for record in records)
+    )
     audit["available_wait_duration_fields"] = sorted(
         field for field in WAIT_DURATION_FIELDS if any(field in record for record in records)
     )
@@ -564,12 +583,13 @@ def calculate_agent_tma(
     records: list[dict[str, Any]],
     reference_date: date,
 ) -> dict[str, float]:
-    """Calcula o TMA diário de cada colaborador pelos tickets humanos.
+    """Calcula o TMA diário de cada colaborador pelo tempo efetivo de chat.
 
     O resultado é consolidado por login e pode receber registros de várias
     distribuidoras e filas. Tickets repetidos, bots e atendimentos que não
     terminaram na data selecionada são desconsiderados. A data de início não
-    restringe o TMA individual.
+    restringe o TMA individual. Registros sem ``chat_time_in_seconds`` válido
+    não entram no denominador.
     """
 
     totals: dict[str, float] = {}
@@ -597,15 +617,17 @@ def calculate_agent_tma(
         if ticket_id in processed_tickets:
             continue
 
-        human_duration = parse_duration_seconds(
-            _first_record_value(record, HUMAN_DURATION_FIELDS)
+        individual_tma_duration = parse_duration_seconds(
+            _first_record_value(record, INDIVIDUAL_TMA_DURATION_FIELDS)
         )
-        if human_duration is None:
+        if individual_tma_duration is None:
             continue
 
         processed_tickets.add(ticket_id)
         login_key = username.casefold()
-        totals[login_key] = totals.get(login_key, 0.0) + human_duration
+        totals[login_key] = (
+            totals.get(login_key, 0.0) + individual_tma_duration
+        )
         counts[login_key] = counts.get(login_key, 0) + 1
 
     return {
