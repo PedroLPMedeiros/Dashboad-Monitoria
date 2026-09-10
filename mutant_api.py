@@ -277,25 +277,13 @@ WAIT_DURATION_FIELDS = (
     "tempo_espera_cliente",
 )
 
+# O TMA geral da fila, o TMA individual e o TAMAX usam a mesma medida de
+# conversa efetiva. Não usamos total_agent_time como alternativa porque esse
+# campo pode incluir todo o período em que o ticket permaneceu atribuído.
 HUMAN_DURATION_FIELDS = (
-    "total_agent_time",
-    "human_service_time",
-    "human_service_time_seconds",
-    "service_time",
-    "attendance_time",
-    "handling_time",
-    "talk_time",
-    "conversation_time",
-    "tah",
-    "tempo_atendimento_humano",
-)
-
-# O TMA individual usa somente o tempo efetivo de conversa informado pela
-# Mutant. Não usamos total_agent_time como alternativa porque esse campo pode
-# incluir todo o período em que o ticket permaneceu atribuído ao colaborador.
-INDIVIDUAL_TMA_DURATION_FIELDS = (
     "chat_time_in_seconds",
 )
+INDIVIDUAL_TMA_DURATION_FIELDS = HUMAN_DURATION_FIELDS
 
 
 def _first_record_value(record: dict[str, Any], fields: tuple[str, ...]) -> Any:

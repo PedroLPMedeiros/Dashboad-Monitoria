@@ -3464,8 +3464,8 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                 <div class="unit-card-stats">
                     <div class="unit-card-stat"><span>Atendimentos abertos</span><strong>{summary['open_count']}</strong></div>
                     <div class="unit-card-stat"><span>{waiting_total_label}</span><strong>{waiting_by_queue_total_text}</strong></div>
-                    <div class="unit-card-stat waiting"><span>Fila de Espera · Principal</span><strong>{principal_waiting_text}</strong></div>
-                    <div class="unit-card-stat waiting"><span>Fila de Espera · Ligação Nova e Troca</span><strong>{special_waiting_text}</strong></div>
+                    <div class="unit-card-stat waiting"><span>Espera · Principal</span><strong>{principal_waiting_text}</strong></div>
+                    <div class="unit-card-stat waiting"><span>Espera · Ligação Nova e Troca</span><strong>{special_waiting_text}</strong></div>
                     <div class="unit-card-stat logged"><span>Logados Atuais · {source_label}</span><strong>{logged_logos_text} / {planned_hc_text}</strong></div>
                     <div class="unit-card-stat"><span>Logaram hoje · {source_label}</span><strong>{logged_today_logos_text}</strong></div>
                     <div class="unit-card-stat carryover"><span>Iniciados ontem e finalizados hoje</span><strong>{summary['previous_day_closed']}</strong></div>
@@ -4022,7 +4022,7 @@ def render_hourly_queue_detail(
             "As entradas podem aparecer zeradas até o nome do campo ser mapeado."
         )
     if not audit.get("available_human_duration_fields"):
-        st.caption("TMA: campo individual de atendimento ainda não identificado.")
+        st.caption("TMA: o campo chat_time_in_seconds ainda não foi identificado.")
     if not audit.get("available_individual_tma_duration_fields"):
         st.caption(
             "TAMAX: o campo chat_time_in_seconds ainda não foi identificado."
@@ -5417,7 +5417,7 @@ with overview_tab:
 
     render_section_title(
         "Resumo da operação",
-        f"Atualizado em {datetime.now().strftime('%d/%m/%Y às %H:%M')}",
+        f"Atualizado em {datetime.now(BRASILIA_TZ).strftime('%d/%m/%Y às %H:%M')}",
         healthy=not any(item["errors"] for item in runtime_units),
     )
 
