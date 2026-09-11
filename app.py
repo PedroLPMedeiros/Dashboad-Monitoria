@@ -3464,8 +3464,8 @@ def render_unit_overview_cards(runtime_units: list[dict[str, Any]]) -> None:
                 <div class="unit-card-stats">
                     <div class="unit-card-stat"><span>Atendimentos abertos</span><strong>{summary['open_count']}</strong></div>
                     <div class="unit-card-stat"><span>{waiting_total_label}</span><strong>{waiting_by_queue_total_text}</strong></div>
-                    <div class="unit-card-stat waiting"><span>Espera · Principal</span><strong>{principal_waiting_text}</strong></div>
-                    <div class="unit-card-stat waiting"><span>Espera · Ligação Nova e Troca</span><strong>{special_waiting_text}</strong></div>
+                    <div class="unit-card-stat waiting"><span>Fila de Espera · Principal</span><strong>{principal_waiting_text}</strong></div>
+                    <div class="unit-card-stat waiting"><span>Fila de Espera · Ligação Nova e Troca</span><strong>{special_waiting_text}</strong></div>
                     <div class="unit-card-stat logged"><span>Logados Atuais · {source_label}</span><strong>{logged_logos_text} / {planned_hc_text}</strong></div>
                     <div class="unit-card-stat"><span>Logaram hoje · {source_label}</span><strong>{logged_today_logos_text}</strong></div>
                     <div class="unit-card-stat carryover"><span>Iniciados ontem e finalizados hoje</span><strong>{summary['previous_day_closed']}</strong></div>
@@ -3720,8 +3720,17 @@ def hourly_flow_dataframe(
                 "Período": f"{hour:02d}:00 às {hour:02d}:59",
                 "Entrada": safe_int(row.get("entries")),
                 "Saída": safe_int(row.get("exits")),
+                "Saída do dia": safe_int(row.get("same_day_exits")),
+                "Saída do estoque anterior": safe_int(
+                    row.get("previous_stock_exits")
+                ),
+                "Saída sem classificação": safe_int(
+                    row.get("unclassified_exits")
+                ),
                 "Demanda Acumulada": safe_int(row.get("accumulated_demand")),
                 "Resíduo": safe_int(row.get("residue")),
+                "HC produtivo": safe_int(row.get("productive_headcount")),
+                "Produtividade média": row.get("average_productivity"),
                 "TMA (s)": row.get("tma_seconds"),
                 "TME (s)": row.get("tme_seconds"),
                 "TAMAX (s)": row.get("tamax_seconds"),
@@ -3762,6 +3771,10 @@ def render_hourly_queue_detail(
 
     total_entries = int(dataframe["Entrada"].sum())
     total_exits = int(dataframe["Saída"].sum())
+    total_same_day_exits = int(dataframe["Saída do dia"].sum())
+    total_previous_stock_exits = int(
+        dataframe["Saída do estoque anterior"].sum()
+    )
     current_residue = int(dataframe["Resíduo"].iloc[-1])
     peak_demand = int(dataframe["Demanda Acumulada"].max())
     metric_columns = st.columns(4)
@@ -3778,7 +3791,10 @@ def render_hourly_queue_detail(
             "Saídas no período",
             total_exits,
             "↗",
-            "Atendimentos encerrados",
+            (
+                f"Do dia: {total_same_day_exits} · "
+                f"Estoque anterior: {total_previous_stock_exits}"
+            ),
         )
     with metric_columns[2]:
         render_metric_card(
@@ -3798,13 +3814,35 @@ def render_hourly_queue_detail(
     st.markdown("### Volume por hora")
     volume_rows: list[dict[str, Any]] = []
     for _, row in dataframe.iterrows():
-        for series in ("Entrada", "Saída", "Demanda Acumulada", "Resíduo"):
+        bar_series = (
+            ("Entrada", "Entrada", 0),
+            ("Saída do dia", "Saída", 0),
+            ("Saída do estoque anterior", "Saída", 1),
+        )
+        if int(row["Saída sem classificação"]):
+            bar_series = (*bar_series, ("Saída sem classificação", "Saída", 2))
+        for series, group, order in bar_series:
             volume_rows.append(
                 {
                     "Hora": row["Hora"],
                     "Período": row["Período"],
                     "Indicador": series,
+                    "Grupo": group,
+                    "Ordem": order,
                     "Quantidade": int(row[series]),
+                    "Tipo": "Barra",
+                }
+            )
+        for series in ("Demanda Acumulada", "Resíduo"):
+            volume_rows.append(
+                {
+                    "Hora": row["Hora"],
+                    "Período": row["Período"],
+                    "Indicador": series,
+                    "Grupo": series,
+                    "Ordem": 0,
+                    "Quantidade": int(row[series]),
+                    "Tipo": "Linha",
                 }
             )
     volume_dataframe = pd.DataFrame(volume_rows)
@@ -3813,9 +3851,7 @@ def render_hourly_queue_detail(
         "height": 310,
         "layer": [
             {
-                "transform": [
-                    {"filter": "datum.Indicador == 'Entrada' || datum.Indicador == 'Saída'"}
-                ],
+                "transform": [{"filter": "datum.Tipo == 'Barra'"}],
                 "mark": {"type": "bar", "cornerRadiusTopLeft": 3, "cornerRadiusTopRight": 3},
                 "encoding": {
                     "x": {
@@ -3825,19 +3861,30 @@ def render_hourly_queue_detail(
                         "title": "Hora de início do intervalo",
                         "axis": {"labelAngle": 0, "grid": False},
                     },
-                    "xOffset": {"field": "Indicador"},
+                    "xOffset": {"field": "Grupo"},
                     "y": {
                         "field": "Quantidade",
                         "type": "quantitative",
                         "title": "Clientes",
+                        "stack": "zero",
                         "scale": {"zero": True, "nice": True},
+                    },
+                    "order": {
+                        "field": "Ordem",
+                        "type": "quantitative",
+                        "sort": "ascending",
                     },
                     "color": {
                         "field": "Indicador",
                         "type": "nominal",
                         "scale": {
-                            "domain": ["Entrada", "Saída"],
-                            "range": ["#7c3aed", "#0f9f8f"],
+                            "domain": [
+                                "Entrada",
+                                "Saída do dia",
+                                "Saída do estoque anterior",
+                                "Saída sem classificação",
+                            ],
+                            "range": ["#7c3aed", "#0f9f8f", "#2563eb", "#64748b"],
                         },
                     },
                     "tooltip": [
@@ -3848,9 +3895,7 @@ def render_hourly_queue_detail(
                 },
             },
             {
-                "transform": [
-                    {"filter": "datum.Indicador == 'Demanda Acumulada' || datum.Indicador == 'Resíduo'"}
-                ],
+                "transform": [{"filter": "datum.Tipo == 'Linha'"}],
                 "mark": {"type": "line", "point": {"filled": True, "size": 48}, "strokeWidth": 2.4},
                 "encoding": {
                     "x": {
@@ -3982,38 +4027,73 @@ def render_hourly_queue_detail(
         )
 
     st.markdown("### Tabela detalhada")
-    table_dataframe = dataframe.copy()
-    for column in time_labels:
-        table_dataframe[column.removesuffix(" (s)")] = table_dataframe[column].map(
-            flow_time_text
-        )
-    table_dataframe = table_dataframe[
-        [
-            "Hora",
-            "Entrada",
-            "Saída",
-            "Demanda Acumulada",
-            "Resíduo",
-            "TMA",
-            "TME",
-            "TAMAX",
-            "TEMAX",
-        ]
+    table_metrics: list[tuple[str, str, str]] = [
+        ("Entrada", "Entrada", "integer"),
+        ("Saída do dia", "Saída do dia", "integer"),
+        (
+            "Saída do estoque anterior",
+            "Saída do estoque anterior",
+            "integer",
+        ),
+        ("Saída total", "Saída", "integer"),
+        ("Demanda acumulada", "Demanda Acumulada", "integer"),
+        ("Resíduo", "Resíduo", "integer"),
+        ("HC produtivo", "HC produtivo", "integer"),
+        (
+            "Produtividade média",
+            "Produtividade média",
+            "decimal",
+        ),
+        ("TMA", "TMA (s)", "time"),
+        ("TME", "TME (s)", "time"),
+        ("TAMAX", "TAMAX (s)", "time"),
+        ("TEMAX", "TEMAX (s)", "time"),
     ]
+    if int(dataframe["Saída sem classificação"].sum()):
+        table_metrics.insert(
+            3,
+            (
+                "Saída sem data de entrada",
+                "Saída sem classificação",
+                "integer",
+            ),
+        )
+
+    table_rows: list[dict[str, Any]] = []
+    for label, source_column, value_type in table_metrics:
+        table_row: dict[str, Any] = {"Indicador": label}
+        for _, hour_row in dataframe.iterrows():
+            value = hour_row[source_column]
+            if value_type == "time":
+                display_value = flow_time_text(value)
+            elif value_type == "decimal":
+                display_value = (
+                    "—"
+                    if value is None or pd.isna(value)
+                    else f"{float(value):.2f}".replace(".", ",")
+                )
+            else:
+                display_value = str(safe_int(value))
+            table_row[str(hour_row["Hora"])] = display_value
+        table_rows.append(table_row)
+
+    table_dataframe = pd.DataFrame(table_rows)
     st.dataframe(
         table_dataframe,
         use_container_width=True,
         hide_index=True,
         height=min(610, 38 + 35 * len(table_dataframe)),
         column_config={
-            "Hora": st.column_config.TextColumn("Hora", width="small"),
-            "Entrada": st.column_config.NumberColumn("Entrada", format="%d"),
-            "Saída": st.column_config.NumberColumn("Saída", format="%d"),
-            "Demanda Acumulada": st.column_config.NumberColumn(
-                "Demanda acumulada", format="%d"
+            "Indicador": st.column_config.TextColumn(
+                "Indicador",
+                width="large",
             ),
-            "Resíduo": st.column_config.NumberColumn("Resíduo", format="%d"),
         },
+    )
+    st.caption(
+        "HC produtivo = colaboradores Logos distintos com pelo menos um "
+        "encerramento humano na hora. Produtividade média = saída total "
+        "dividida pelo HC produtivo do intervalo."
     )
 
     if not audit.get("available_entry_fields"):
@@ -4062,6 +4142,111 @@ def format_analytic_collection_time(value: Any) -> str:
     return collected_at.astimezone(BRASILIA_TZ).strftime("%d/%m/%Y %H:%M:%S")
 
 
+def last_consolidated_exit_hour(
+    runtime_units: list[dict[str, Any]],
+    first_hour: int = 8,
+) -> int:
+    """Retorna a última hora com saída humana a partir do início da operação."""
+
+    exit_hours: list[int] = []
+    for item in runtime_units:
+        for queue_rows in (item.get("hourly_queue_flow") or {}).values():
+            for row in queue_rows or []:
+                hour = safe_int(row.get("hour"))
+                if hour >= first_hour and safe_int(row.get("exits")) > 0:
+                    exit_hours.append(hour)
+    return max(exit_hours, default=first_hour)
+
+
+def consolidated_hourly_dataframe(
+    runtime_units: list[dict[str, Any]],
+    hour: int,
+) -> pd.DataFrame:
+    """Monta uma linha por distribuidora e fila para uma hora de saída."""
+
+    rows: list[dict[str, Any]] = []
+    for item in runtime_units:
+        unit = item["unit"]
+        queue_flow = item.get("hourly_queue_flow") or {}
+        queue_names = list(queue_flow.keys())
+        if not queue_names:
+            queue_names = ["Principal", "Ligação Nova e Troca"]
+
+        report_failed = bool(item["errors"].get("analytic_report"))
+        for queue_name in queue_names:
+            source_row = next(
+                (
+                    row
+                    for row in (queue_flow.get(queue_name) or [])
+                    if safe_int(row.get("hour")) == hour
+                ),
+                None,
+            )
+            if report_failed or source_row is None:
+                rows.append(
+                    {
+                        "Distribuidora": unit.label,
+                        "Fila": queue_name,
+                        "Entrada": None,
+                        "Saída do dia": None,
+                        "Estoque anterior": None,
+                        "Saída sem classificação": None,
+                        "Saída total": None,
+                        "Demanda acumulada": None,
+                        "Resíduo": None,
+                        "HC produtivo": None,
+                        "Produtividade média": None,
+                        "TMA": "—",
+                        "TME": "—",
+                        "TAMAX": "—",
+                        "TEMAX": "—",
+                    }
+                )
+                continue
+
+            average_productivity = source_row.get("average_productivity")
+            rows.append(
+                {
+                    "Distribuidora": unit.label,
+                    "Fila": queue_name,
+                    "Entrada": safe_int(source_row.get("entries")),
+                    "Saída do dia": safe_int(source_row.get("same_day_exits")),
+                    "Estoque anterior": safe_int(
+                        source_row.get("previous_stock_exits")
+                    ),
+                    "Saída sem classificação": safe_int(
+                        source_row.get("unclassified_exits")
+                    ),
+                    "Saída total": safe_int(source_row.get("exits")),
+                    "Demanda acumulada": safe_int(
+                        source_row.get("accumulated_demand")
+                    ),
+                    "Resíduo": safe_int(source_row.get("residue")),
+                    "HC produtivo": safe_int(
+                        source_row.get("productive_headcount")
+                    ),
+                    "Produtividade média": (
+                        None
+                        if average_productivity is None
+                        else float(average_productivity)
+                    ),
+                    "TMA": flow_time_text(source_row.get("tma_seconds")),
+                    "TME": flow_time_text(source_row.get("tme_seconds")),
+                    "TAMAX": flow_time_text(source_row.get("tamax_seconds")),
+                    "TEMAX": flow_time_text(source_row.get("temax_seconds")),
+                }
+            )
+
+    dataframe = pd.DataFrame(rows)
+    if (
+        not dataframe.empty
+        and "Saída sem classificação" in dataframe
+        and not dataframe["Saída sem classificação"].fillna(0).astype(int).any()
+    ):
+        dataframe = dataframe.drop(columns=["Saída sem classificação"])
+    return dataframe
+
+
 def analytic_snapshot_filename_time(value: Any) -> str:
     """Cria o trecho de data e hora usado no arquivo do snapshot analítico."""
 
@@ -4087,144 +4272,73 @@ def render_hourly_queue_flow(
     st.info(
         "Os volumes representam o período do dia. Demanda acumulada = entrada "
         "da hora + resíduo anterior. Resíduo = máximo entre zero e demanda "
-        "acumulada menos saída."
+        "acumulada menos saída. No gráfico detalhado, a saída total é dividida "
+        "entre atendimentos iniciados no dia e estoque anterior."
     )
 
-    summary_rows: list[dict[str, Any]] = []
-    for item in runtime_units:
-        unit = item["unit"]
-        queue_names = list((item.get("hourly_queue_flow") or {}).keys())
-        if not queue_names:
-            queue_names = ["Principal", "Ligação Nova e Troca"]
-
-        for queue_name in queue_names:
-            dataframe = hourly_flow_dataframe(item, queue_name, reference_date)
-            report_failed = bool(item["errors"].get("analytic_report"))
-            if dataframe.empty or report_failed:
-                summary_rows.append(
-                    {
-                        "Distribuidora": unit.label,
-                        "Fila": queue_name,
-                        "Entrada": None,
-                        "Saída": None,
-                        "Resíduo atual": None,
-                        "Demanda acumulada": None,
-                        "TMA": "—",
-                        "TME": "—",
-                        "TEMAX": "—",
-                        "TAMAX": "—",
-                        "Registros usados": len(item.get("analytic_records") or []),
-                        "Coleta concluída": format_analytic_collection_time(
-                            item.get("analytic_collected_at")
-                        ),
-                    }
-                )
-                continue
-
-            summary_rows.append(
-                {
-                    "Distribuidora": unit.label,
-                    "Fila": queue_name,
-                    "Entrada": int(dataframe["Entrada"].sum()),
-                    "Saída": int(dataframe["Saída"].sum()),
-                    "Resíduo atual": int(dataframe["Resíduo"].iloc[-1]),
-                    "Demanda acumulada": int(
-                        dataframe["Demanda Acumulada"].iloc[-1]
-                    ),
-                    "TMA": latest_hourly_time(
-                        dataframe, "TMA (s)", include_hour=True
-                    ),
-                    "TME": latest_hourly_time(
-                        dataframe, "TME (s)", include_hour=True
-                    ),
-                    "TEMAX": latest_hourly_time(
-                        dataframe, "TEMAX (s)", include_hour=True
-                    ),
-                    "TAMAX": latest_hourly_time(
-                        dataframe, "TAMAX (s)", include_hour=True
-                    ),
-                    "Registros usados": len(item.get("analytic_records") or []),
-                    "Coleta concluída": format_analytic_collection_time(
-                        item.get("analytic_collected_at")
-                    ),
-                }
-            )
-
     st.markdown("### Visão consolidada")
-    summary_dataframe = pd.DataFrame(summary_rows)
-    table_view, card_view = st.tabs(["Visão em tabela", "Visão em cards"])
-    with table_view:
-        st.dataframe(
-            summary_dataframe,
-            use_container_width=True,
-            hide_index=True,
-            height=min(470, 38 + 35 * len(summary_dataframe)),
-            column_config={
-                "Distribuidora": st.column_config.TextColumn(
-                    "Distribuidora", width="medium"
-                ),
-                "Fila": st.column_config.TextColumn("Fila", width="large"),
-                "Entrada": st.column_config.NumberColumn("Entrada", format="%d"),
-                "Saída": st.column_config.NumberColumn("Saída", format="%d"),
-                "Resíduo atual": st.column_config.NumberColumn(
-                    "Resíduo atual", format="%d"
-                ),
-                "Demanda acumulada": st.column_config.NumberColumn(
-                    "Demanda acumulada", format="%d"
-                ),
-                "Registros usados": st.column_config.NumberColumn(
-                    "Registros usados", format="%d"
-                ),
-                "Coleta concluída": st.column_config.TextColumn(
-                    "Coleta concluída", width="large"
-                ),
-            },
-        )
+    with st.container():
+        first_hour = 8
+        last_hour = last_consolidated_exit_hour(runtime_units, first_hour)
+        hour_numbers = list(range(first_hour, last_hour + 1))
+        hour_tabs = st.tabs([f"{hour:02d}h" for hour in hour_numbers])
 
-    with card_view:
-        card_columns = st.columns(2)
-        for row_index, row in enumerate(summary_rows):
-            with card_columns[row_index % 2]:
-                with st.container(border=True):
-                    st.markdown(
-                        f"**{row['Distribuidora']} · {row['Fila']}**"
-                    )
-                    st.caption(
-                        f"Base usada: {row['Registros usados']} registros · "
-                        f"coleta concluída em {row['Coleta concluída']}"
-                    )
-                    st.caption(f"TEMAX: {row['TEMAX']}")
-                    value_columns = st.columns(4)
-                    value_columns[0].metric(
-                        "Entrada",
-                        "—" if row["Entrada"] is None else row["Entrada"],
-                    )
-                    value_columns[1].metric(
-                        "Saída",
-                        "—" if row["Saída"] is None else row["Saída"],
-                    )
-                    value_columns[2].metric(
-                        "Resíduo",
-                        (
-                            "—"
-                            if row["Resíduo atual"] is None
-                            else row["Resíduo atual"]
+        for hour, hour_tab in zip(hour_numbers, hour_tabs):
+            with hour_tab:
+                st.caption(
+                    f"Período de saída: {hour:02d}:00 às {hour:02d}:59. "
+                    "Os intervalos sem movimentação permanecem visíveis com zero."
+                )
+                hourly_dataframe = consolidated_hourly_dataframe(
+                    runtime_units,
+                    hour,
+                )
+                st.dataframe(
+                    hourly_dataframe,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(470, 38 + 35 * len(hourly_dataframe)),
+                    column_config={
+                        "Distribuidora": st.column_config.TextColumn(
+                            "Distribuidora", width="medium"
                         ),
-                    )
-                    value_columns[3].metric("TMA", row["TMA"])
-                    demand_text = (
-                        "—"
-                        if row["Demanda acumulada"] is None
-                        else row["Demanda acumulada"]
-                    )
-                    st.caption(
-                        f"Demanda acumulada: {demand_text} · "
-                        f"TME: {row['TME']} · TAMAX: {row['TAMAX']}"
-                    )
+                        "Fila": st.column_config.TextColumn(
+                            "Fila", width="large"
+                        ),
+                        "Entrada": st.column_config.NumberColumn(
+                            "Entrada", format="%d"
+                        ),
+                        "Saída do dia": st.column_config.NumberColumn(
+                            "Saída do dia", format="%d"
+                        ),
+                        "Estoque anterior": st.column_config.NumberColumn(
+                            "Estoque anterior", format="%d"
+                        ),
+                        "Saída sem classificação": st.column_config.NumberColumn(
+                            "Saída sem classificação", format="%d"
+                        ),
+                        "Saída total": st.column_config.NumberColumn(
+                            "Saída total", format="%d"
+                        ),
+                        "Demanda acumulada": st.column_config.NumberColumn(
+                            "Demanda acumulada", format="%d"
+                        ),
+                        "Resíduo": st.column_config.NumberColumn(
+                            "Resíduo", format="%d"
+                        ),
+                        "HC produtivo": st.column_config.NumberColumn(
+                            "HC produtivo", format="%d"
+                        ),
+                        "Produtividade média": st.column_config.NumberColumn(
+                            "Produtividade média", format="%.2f"
+                        ),
+                    },
+                )
+
     st.caption(
-        "TMA, TME, TEMAX e TAMAX mostram o último intervalo com valor e trazem "
-        "a hora de referência após o tempo. A base e o horário da coleta são "
-        "os mesmos usados para gerar os volumes, tempos e o download do snapshot."
+        "Cada aba representa a hora de encerramento: Saída, "
+        "HC, produtividade, TMA, TME, TAMAX e TEMAX usam o closed_at do ticket; "
+        "Entrada usa a hora de criação."
     )
 
     st.markdown("### Detalhamento por distribuidora")
@@ -5229,6 +5343,7 @@ for index, unit in enumerate(selected_units, start=1):
         analytic_records,
         reference_date,
         campaign_queue_map,
+        agent_filter=is_logos_employee,
     )
 
     summary = {
@@ -6052,8 +6167,9 @@ with technical_tab:
             flow_audit = item.get("hourly_queue_flow_audit") or {}
             st.json(flow_audit)
             st.caption(
-                "Entradas usam o horário de criação do ticket. Saídas, TMA, "
-                "TME, TAMAX e TEMAX usam o horário de encerramento."
+                "Entradas usam o horário de criação do ticket. Saídas, HC "
+                "produtivo, produtividade média, TMA, TME, TAMAX e TEMAX usam "
+                "o horário de encerramento e consideram somente a EPS Logos."
             )
 
         st.divider()

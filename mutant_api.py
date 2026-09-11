@@ -7,7 +7,7 @@ import json
 import re
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from typing import Any
+from typing import Any, Callable
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -397,12 +397,14 @@ def build_hourly_queue_flow(
     records: list[dict[str, Any]],
     reference_date: date,
     campaign_queue_map: dict[str, str],
+    agent_filter: Callable[[str, str], bool] | None = None,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, Any]]:
     """Calcula entrada, saída, resíduo e tempos horários por fila.
 
-    Entradas usam o horário de criação/início do ticket. Saídas e tempos usam
-    o mesmo conjunto humano considerado na produtividade, agrupado pelo horário
-    de encerramento. O resíduo inicia zerado à meia-noite e nunca fica negativo.
+    Entradas usam o horário de criação/início do ticket na data selecionada.
+    Saídas e tempos usam o conjunto humano encerrado na data selecionada,
+    independentemente da data de entrada, agrupado pelo horário de encerramento.
+    O resíduo inicia zerado à meia-noite e nunca fica negativo.
     """
 
     queue_names = tuple(dict.fromkeys(campaign_queue_map.values()))
@@ -411,6 +413,10 @@ def build_hourly_queue_flow(
             hour: {
                 "entries": 0,
                 "exits": 0,
+                "same_day_exits": 0,
+                "previous_stock_exits": 0,
+                "unclassified_exits": 0,
+                "productive_agents": set(),
                 "human_durations": [],
                 "individual_tma_durations_by_agent": {},
                 "wait_durations": [],
@@ -428,6 +434,8 @@ def build_hourly_queue_flow(
         "exits_without_human_duration": 0,
         "exits_without_individual_tma_duration": 0,
         "exits_without_wait_duration": 0,
+        "exits_without_entry_classification": 0,
+        "records_excluded_by_agent_filter": 0,
     }
     entry_tickets: set[str] = set()
     exit_tickets: set[str] = set()
@@ -458,9 +466,13 @@ def build_hourly_queue_flow(
         if not username or username.isdigit() or "external" in username.lower():
             continue
 
-        if entry_local is None:
-            entry_local = entry_at.astimezone(BRASILIA_TZ) if entry_at else None
-        if entry_local is None or entry_local.date() != reference_date:
+        agent_name = str(
+            record.get("assigned_to_name")
+            or record.get("agent_name")
+            or username
+        ).strip()
+        if agent_filter is not None and not agent_filter(username, agent_name):
+            audit["records_excluded_by_agent_filter"] += 1
             continue
 
         exit_at = parse_api_datetime(_first_record_value(record, EXIT_DATETIME_FIELDS))
@@ -472,6 +484,14 @@ def build_hourly_queue_flow(
 
         bucket = buckets[queue_name][exit_local.hour]
         bucket["exits"] += 1
+        bucket["productive_agents"].add(username.casefold())
+        if entry_local is not None and entry_local.date() == reference_date:
+            bucket["same_day_exits"] += 1
+        elif entry_local is not None and entry_local.date() < reference_date:
+            bucket["previous_stock_exits"] += 1
+        else:
+            bucket["unclassified_exits"] += 1
+            audit["exits_without_entry_classification"] += 1
         exit_tickets.add(ticket_id)
         audit["exits_considered"] += 1
 
@@ -510,6 +530,10 @@ def build_hourly_queue_flow(
             bucket = hourly_buckets[hour]
             entries = int(bucket["entries"])
             exits = int(bucket["exits"])
+            same_day_exits = int(bucket["same_day_exits"])
+            previous_stock_exits = int(bucket["previous_stock_exits"])
+            unclassified_exits = int(bucket["unclassified_exits"])
+            productive_headcount = len(bucket["productive_agents"])
             accumulated_demand = previous_residue + entries
             residue = max(0, accumulated_demand - exits)
             human_values = list(bucket["human_durations"])
@@ -527,6 +551,15 @@ def build_hourly_queue_flow(
                     "hour": hour,
                     "entries": entries,
                     "exits": exits,
+                    "same_day_exits": same_day_exits,
+                    "previous_stock_exits": previous_stock_exits,
+                    "unclassified_exits": unclassified_exits,
+                    "productive_headcount": productive_headcount,
+                    "average_productivity": (
+                        exits / productive_headcount
+                        if productive_headcount
+                        else None
+                    ),
                     "accumulated_demand": accumulated_demand,
                     "residue": residue,
                     "tma_seconds": (
