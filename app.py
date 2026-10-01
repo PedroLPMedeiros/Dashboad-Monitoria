@@ -64,11 +64,11 @@ UNIT_ICONS = {
 # multiplicado pela referência individual de 49 atendimentos por dia.
 DAILY_PRODUCTIVITY_PER_HC = 49
 UNIT_PLANNED_HEADCOUNT = {
-    "BRASILIA": 7,
-    "COELBA": 18,
-    "PERNAMBUCO": 17,
-    "ELEKTRO": 10,
-    "COSERN": 14,
+    "BRASILIA": 6,
+    "COELBA": 14,
+    "PERNAMBUCO": 14,
+    "ELEKTRO": 8,
+    "COSERN": 11,
 }
 GENERAL_DAILY_PRODUCTIVITY_GOAL = (
     sum(UNIT_PLANNED_HEADCOUNT.values()) * DAILY_PRODUCTIVITY_PER_HC
