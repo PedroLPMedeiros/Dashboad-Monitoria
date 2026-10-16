@@ -64,11 +64,11 @@ UNIT_ICONS = {
 # multiplicado pela referência individual de 49 atendimentos por dia.
 DAILY_PRODUCTIVITY_PER_HC = 49
 UNIT_PLANNED_HEADCOUNT = {
-    "BRASILIA": 6,
-    "COELBA": 14,
-    "PERNAMBUCO": 14,
-    "ELEKTRO": 8,
-    "COSERN": 11,
+    "BRASILIA": 7,
+    "COELBA": 18,
+    "PERNAMBUCO": 17,
+    "ELEKTRO": 10,
+    "COSERN": 14,
 }
 GENERAL_DAILY_PRODUCTIVITY_GOAL = (
     sum(UNIT_PLANNED_HEADCOUNT.values()) * DAILY_PRODUCTIVITY_PER_HC
@@ -179,10 +179,6 @@ LOGOS_ROSTER_HASHES = frozenset(
     }
 )
 
-
-LOGOS_IDENTIFIER_ALIASES = {
-    "rafaella waleska souza pereira": "rafaela waleska souza pereira",
-}
 
 # Relação específica do monitoramento de pausas. Os identificadores do novo
 # quadro foram protegidos por SHA-256 e associados à distribuidora de origem.
@@ -2112,9 +2108,6 @@ def is_logos_employee(login: Any, attendant: Any) -> bool:
         if not normalized:
             continue
         candidates.add(normalized)
-        alias = LOGOS_IDENTIFIER_ALIASES.get(normalized)
-        if alias:
-            candidates.add(alias)
 
     return any(
         hashlib.sha256(candidate.encode("utf-8")).hexdigest()
@@ -2149,9 +2142,6 @@ def pause_roster_unit(login: Any, attendant: Any) -> str | None:
         if not normalized:
             continue
         candidates.append(normalized)
-        alias = LOGOS_IDENTIFIER_ALIASES.get(normalized)
-        if alias:
-            candidates.append(alias)
 
     for candidate in candidates:
         candidate_hash = hashlib.sha256(candidate.encode("utf-8")).hexdigest()
